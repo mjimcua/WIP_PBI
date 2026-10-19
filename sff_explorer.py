@@ -406,6 +406,7 @@ class SFFExplorer:
                                         "unidades_renovadas": lambda value: f"{value:,.0f}".replace(",", ".")}))
         items.append(self.figure_business_months())
         items.append(self.figure_business_rates())
+        items.extend(self.acquisition_check())
         if dimension:
             items.extend(self.business_breakdown(dimension, year or (future_years[0] if future_years else None)))
         return items
@@ -454,6 +455,36 @@ class SFFExplorer:
             figure.add_scatter(x=part["period"], y=part["tasa_usd"], name=f"Tasa en USD ({label})",
                                line=dict(color=SERIES_COLOURS[1], dash=dash, width=2))
         return layout(figure, "Tasa de renovación de la pipeline: unidades y USD", 360, "", ".0%")
+
+    def acquisition_check(self) -> list:
+        """The simulated acquisitions against what was sold in the same months a year before: an acquisition sold in m
+        is the 1-year acquisition pipeline due in m + 12. The ratio should be the recent growth, not several times it."""
+        configuration, core = self.configuration, self.pipeline_core()
+        acquisition, term = configuration.acquisition_column, configuration.term_column
+        window = configuration.simulation_window
+        if not acquisition or not window or acquisition not in core.columns:
+            return []
+        acquisitions = core[core[acquisition].astype(str).isin([str(value) for value in configuration.acquisition_values])]
+        if term and term in acquisitions.columns:
+            acquisitions = acquisitions[acquisitions[term].astype(str) == str(configuration.one_year_term_value)]
+        rows = []
+        for value in configuration.acquisition_values:
+            of_value = acquisitions[acquisitions[acquisition].astype(str) == str(value)]
+            for month in window:
+                sold_before = of_value[(of_value["period"] == str(month)) & (of_value["forecast_pipeline_source"] != "pipeline_simulada")]
+                simulated = of_value[(of_value["period"] == str(month + 12)) & (of_value["forecast_pipeline_source"] == "pipeline_simulada")]
+                before_units = sold_before["forecast_to_renew_units"].sum()
+                rows.append({acquisition: value, "mes_venta": str(month), "unidades_ano_anterior": before_units,
+                             "usd_ano_anterior": sold_before["forecast_to_renew_USD"].sum(),
+                             "unidades_simuladas": simulated["forecast_to_renew_units"].sum(),
+                             "usd_simulado": simulated["forecast_to_renew_USD"].sum(),
+                             "ratio_unidades": simulated["forecast_to_renew_units"].sum() / before_units if before_units else np.nan})
+        table = pd.DataFrame(rows)
+        return [Title("Adquisición simulada frente a lo vendido un año antes",
+                      "Una venta de m vence en m + 12. Lo simulado debería ser lo vendido un año antes por el crecimiento "
+                      f"reciente (aviso fuera de {configuration.acquisition_ratio_low:g}–{configuration.acquisition_ratio_high:g}×)."),
+                Table(table, formats={"unidades_ano_anterior": integer, "unidades_simuladas": integer, "usd_ano_anterior": money,
+                                      "usd_simulado": money, "ratio_unidades": lambda value: "—" if pd.isna(value) else f"{value:.2f}×".replace(".", ",")})]
 
     def business_breakdown(self, dimension: str, year: int) -> list:
         """One dimension of one year: what falls due, what renews or is expected, the rates and the band."""

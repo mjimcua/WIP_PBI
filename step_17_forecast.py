@@ -74,8 +74,8 @@ Actions (logged as they are done):
   6. the simulation window
   7. the distribution of the timevarying marks still to come: the forecast with them
   8. the totals by month and by year
-  9. check the forecast                                              checks 1-8
- 10. write the forecast, the months, the summary and the maturation  checks 9-12
+  9. check the forecast                                              checks 1-9
+ 10. write the forecast, the months, the summary and the maturation  checks 10-13
  11. count the checks; stop if any failed
  12. show the forecast by month, the answers by year and the maturation, as tables; the detector of
      marks above their final share (MARCAS POR ENCIMA DE SU PROPORCIÓN FINAL)
@@ -87,11 +87,13 @@ Checks (logged as they are made, numbered, at the level of their status):
    4. the pipeline of the future rows is conserved (Σ USD due)
    5. the totals are the sum of the rows
    6. every value a projected renewal takes after renewing exists in the history (WARN)
-   7. the distribution moves units, it does not create them (moved ≤ units due, l in [0, 1])
-   8. no negative mark is TODAY above its final share by mark_excess_warning_pp or more in any future
+   7. the simulated acquisitions are between acquisition_ratio_low and acquisition_ratio_high times what was
+      sold in the same months a year before (WARN; the section ADQUISICIÓN SIMULADA FRENTE AL AÑO ANTERIOR)
+   8. the distribution moves units, it does not create them (moved ≤ units due, l in [0, 1])
+   9. no negative mark is TODAY above its final share by mark_excess_warning_pp or more in any future
       month (WARN: the extract marks too early, e.g. a fresh cohort marked dormant; the detector says
       which months and what it costs the forecast)
-   9-12. tables sff_forecast, sff_forecast_mes, sff_resumen_negocio, sff_forecast_maduracion written
+   10-13. tables sff_forecast, sff_forecast_mes, sff_resumen_negocio, sff_forecast_maduracion written
         and read back
 
 Output: (the forecast row by row, by month, by year) · tables sff_forecast, sff_forecast_mes,
@@ -128,8 +130,8 @@ STEP_ACTIONS = ["the future rows of the extract",
                 "the simulation window: renewals of 1-year licences and acquisitions, due 12 months later",
                 "the distribution of the timevarying marks still to come: the forecast with them",
                 "the totals by month and by year, by origin of the pipeline",
-                "check the forecast (checks 1-8)",
-                "write the forecast, the months, the summary and the maturation (checks 9-12)",
+                "check the forecast (checks 1-9)",
+                "write the forecast, the months, the summary and the maturation (checks 10-13)",
                 "count the checks; stop if any failed",
                 "show the forecast by month, the answers by year and the maturation, as tables"]
 STEP_OUTPUT = "every future row with rate, uplift, expected USD and bands · totals by month and year · three tables"
@@ -182,6 +184,7 @@ def assemble_forecast(fine_table: pd.DataFrame, forecast_units: pd.DataFrame, se
         extension = distribute_marks(extension, fine_table, configuration)      # their marks are unknown, not absent
         future = pd.concat([future, extension], ignore_index=True)
     window = configuration.simulation_window
+    acquisitions = acquisition_comparison(fine_table, extension, configuration)
     configuration.log_action(STEP_LABEL, 6, f"simulation window {window[0] if window else '—'}..{window[-1] if window else '—'} → "
                                             f"due {window[0] + 12 if window else '—'}..{window[-1] + 12 if window else '—'}: "
                                             f"{extension[PIPELINE_ORIGIN_COLUMN].value_counts().to_dict() if len(extension) else {}} rows · "
@@ -228,6 +231,18 @@ def assemble_forecast(fine_table: pd.DataFrame, forecast_units: pd.DataFrame, se
                                                      f"{sorted(history_values[column_name])[:8]})"
                                                      for column_name, value in unseen.items()),
                             blocking=False, context=f"{after_renewal}" if after_renewal else "nothing declared")
+    if len(acquisitions):
+        by_value = acquisitions.groupby(configuration.acquisition_column)[["unidades_ano_anterior", "unidades_simuladas"]].sum()
+        by_value["ratio"] = by_value["unidades_simuladas"] / by_value["unidades_ano_anterior"].where(by_value["unidades_ano_anterior"] > 0)
+        outside = by_value[(by_value["ratio"] < configuration.acquisition_ratio_low) | (by_value["ratio"] > configuration.acquisition_ratio_high)]
+        configuration.log_check(STEP_LABEL, check_log,
+                                f"the simulated acquisitions are between {configuration.acquisition_ratio_low:g} and "
+                                f"{configuration.acquisition_ratio_high:g} times what was sold in the same months a year before",
+                                outside.empty,
+                                failure_detail=" · ".join(f"{value}: {row['ratio']:.2f}×" for value, row in outside.iterrows())
+                                               + " · see ADQUISICIÓN SIMULADA FRENTE AL AÑO ANTERIOR",
+                                blocking=False,
+                                context=" · ".join(f"{value} {row['ratio']:.2f}×" for value, row in by_value.iterrows()))
     if maturation is not None:
         moved_too_much = future[future["maduracion_unidades_migran"] > future[configuration.pipeline_units_col] + 1e-9]
         share_moved = future["maduracion_l"]
@@ -281,6 +296,7 @@ def assemble_forecast(fine_table: pd.DataFrame, forecast_units: pd.DataFrame, se
     configuration.logger.doc(f"[{STEP_LABEL}] by year: renewed in the closed months + expected in the future ones (by origin "
                              f"of the pipeline):")
     configuration.show_table(by_year)
+    show_acquisitions(acquisitions, fine_table, configuration)
     if maturation is not None:
         show_distribution(maturation, configuration)
         show_marks_above_final(marks_detector, configuration)
@@ -556,6 +572,38 @@ def show_distribution(table: pd.DataFrame, configuration: Config) -> None:
     doc(f"[{STEP_LABEL}] ══════════ FIN DEL REPARTO DE MARCAS ══════════")
 
 
+def show_acquisitions(comparison: pd.DataFrame, fine_table: pd.DataFrame, configuration: Config) -> None:
+    """The simulated acquisitions against the same months a year before, and the level they took, on screen."""
+    if comparison is None or comparison.empty:
+        return
+    doc = configuration.logger.doc
+    acquisition = configuration.acquisition_column
+    events, dims_of_group, _ = acquisition_events(fine_table, configuration)
+    levels = acquisition_levels(events, dims_of_group, configuration, last_due_month=fine_table[configuration.period_col].max())
+    doc(f"[{STEP_LABEL}] ══════════ ADQUISICIÓN SIMULADA FRENTE AL AÑO ANTERIOR ══════════")
+    doc(f"[{STEP_LABEL}] una venta del mes m se simula como lo que su grupo vendió en m − 12 × el nivel de su valor de "
+        f"adquisición ({', '.join(configuration.acquisition_level_dims) or 'toda la cartera'}): unidades vendidas en los "
+        f"últimos {configuration.acquisition_level_window_months} meses / las de los mismos meses un año antes")
+    shown_levels = levels.copy()
+    shown_levels["nivel"] = shown_levels["nivel"].round(3)
+    configuration.show_table(shown_levels)
+    if (levels["origen"] == "sin_referencia").any():
+        doc(f"[{STEP_LABEL}] AVISO: el extracto no llega al vencimiento de las ventas de los últimos "
+            f"{configuration.acquisition_level_window_months} meses (o no hubo ventas un año antes): su nivel es 1, se simula "
+            f"exactamente lo vendido un año antes")
+    shown = comparison.copy()
+    for column_name in ("unidades_ano_anterior", "usd_ano_anterior", "unidades_simuladas", "usd_simulado"):
+        shown[column_name] = shown[column_name].round(0)
+    shown["ratio_unidades"] = shown["ratio_unidades"].round(3)
+    configuration.show_table(shown)
+    for value, block in comparison.groupby(acquisition):
+        before, now = block["usd_ano_anterior"].sum(), block["usd_simulado"].sum()
+        doc(f"[{STEP_LABEL}] VALORACIÓN {value}: vendido un año antes ${before:,.0f} ({block['unidades_ano_anterior'].sum():,.0f} "
+            f"unidades); simulado ${now:,.0f} ({block['unidades_simuladas'].sum():,.0f} unidades), "
+            f"{block['unidades_simuladas'].sum() / max(block['unidades_ano_anterior'].sum(), 1e-9):.2f}× en unidades")
+    doc(f"[{STEP_LABEL}] ══════════ FIN DE ADQUISICIÓN SIMULADA FRENTE AL AÑO ANTERIOR ══════════")
+
+
 def marks_above_final(maturation: pd.DataFrame, fine_table: pd.DataFrame, configuration: Config) -> pd.DataFrame:
     """The detector of marks above their final share: one row per future month and negative mark.
 
@@ -795,13 +843,14 @@ def extend_horizon(fine_table: pd.DataFrame, extract_future: pd.DataFrame, conte
              acquisition becomes renewed_acquisition_value (it renewed: it is not an acquisition any more);
              the dims of dims_after_renewal take their declared value (prev_OperationGroup → the renewal);
              the timevarying marks are neutral (nothing is known yet of the renewal's marks).
-             simulada: acquisitions of the window, per acquisition value and group, level × same
-             month a year before, value per unit of 12 months, timevarying off, acquisition_discount.
+             simulada: acquisitions of the window, per acquisition value and group: what the group sold in the
+             same month a year before × the AGGREGATE level of its acquisition value (acquisition_levels), value per
+             unit of 12 months, timevarying off, acquisition_discount.
              The group of an acquisition keeps the grain of the pipeline: every mandatory dim, every
              extra_renovacion and every extra_revalorizacion (built from the Config: a new dim joins by
              itself); the discount is one value (acquisition_discount), the timevarying dims are off.
-    EDGE CASES: an empty window → nothing. No acquisition_column → no simulada. A group with no
-             history for the level → its share of the projected total of its acquisition value.
+    EDGE CASES: an empty window → nothing. No acquisition_column → no simulada. A group that sold nothing in
+             the same month a year before sells nothing (the total is what was sold a year before × the level).
     """
     period = configuration.period_col
     window = configuration.simulation_window
@@ -853,65 +902,164 @@ def extend_horizon(fine_table: pd.DataFrame, extract_future: pd.DataFrame, conte
     return new_rows
 
 
-def simulate_acquisitions(fine_table: pd.DataFrame, window: list, carried: list, configuration: Config) -> pd.DataFrame:
-    """The acquisitions of the window, one line per group of dims and acquisition value, due 12 months later.
-    An acquisition of month m is read as the pipeline it created: the 1-year acquisition rows due in m + 12."""
-    if not configuration.acquisition_column or not configuration.acquisition_values:
-        return pd.DataFrame()
+def acquisition_events(fine_table: pd.DataFrame, configuration: Config) -> tuple:
+    """The 1-year acquisitions read as SALES: an acquisition sold in month m is the 1-year acquisition rows due in
+    m + 12. One row per group of dims, acquisition value and month of sale, for the months already sold (before the
+    current month): units and value. Returns (events, the dims of every group, the group columns).
+
+    The group keeps the grain of the pipeline: every mandatory dim, every extra_renovacion and every
+    extra_revalorizacion, but not the timevarying marks nor the term (an acquisition is simulated without marks and
+    as a 1-year licence)."""
     period, current = configuration.period_col, configuration.calendar_boundaries()["current"]
     timevarying = list(configuration.structural_timevarying_dims)
-    group_columns = [column for column in carried if column not in timevarying and column != configuration.term_column]
+    carried = list(dict.fromkeys(configuration.rate_series_columns + configuration.extra_revalorizacion
+                                 + ([configuration.acquisition_column] if configuration.acquisition_column else [])))
+    group_columns = [column for column in carried if column in fine_table.columns and column not in timevarying
+                     and column != configuration.term_column and column != configuration.acquisition_column]
+    empty = (pd.DataFrame(columns=["_grupo", configuration.acquisition_column or "_valor", "_mes_evento", "unidades", "valor"]),
+             pd.DataFrame(columns=group_columns), group_columns)
+    if not configuration.acquisition_column or not configuration.acquisition_values:
+        return empty
     acquired = fine_table[is_acquisition(fine_table, configuration) & is_one_year(fine_table, configuration)].copy()
     if acquired.empty:
-        return pd.DataFrame()
+        return empty
     acquired["_mes_evento"] = acquired[period] - configuration.one_year_term_months
+    acquired = acquired[acquired["_mes_evento"] < current]
     acquired["_grupo"] = join_columns(acquired, group_columns)
-    events = (acquired[acquired["_mes_evento"] < current]
-              .groupby(["_grupo", configuration.acquisition_column, "_mes_evento"])
+    events = (acquired.groupby(["_grupo", configuration.acquisition_column, "_mes_evento"])
               [[configuration.pipeline_units_col, configuration.pipeline_usd_col]].sum().reset_index()
               .rename(columns={configuration.pipeline_units_col: "unidades", configuration.pipeline_usd_col: "valor"}))
     dims_of_group = acquired.drop_duplicates("_grupo").set_index("_grupo")[group_columns]
-    level_months = list(pd.period_range(current - configuration.acquisition_level_window_months, current - 1, freq="M"))
+    return events, dims_of_group, group_columns
+
+
+def acquisition_levels(events: pd.DataFrame, dims_of_group: pd.DataFrame, configuration: Config,
+                       last_due_month=None) -> pd.DataFrame:
+    """The growth of the acquisitions: the units sold in the last acquisition_level_window_months closed months over the
+    units sold in the same months a year before, per acquisition value and LEVEL KEY (acquisition_level_dims; none =
+    the whole portfolio of that acquisition value).
+
+    OUTPUT:  one row per acquisition value and level key: unidades_recientes, unidades_antes, nivel and origen
+             ("propio": the key has acquisition_level_min_units units a year before; "cartera": fewer, it takes the
+             level of its acquisition value; "sin_referencia": not even that, level 1).
+    RULES:   the level is NEVER measured per fine group: a group of a few units a year before gives a ratio of small
+             numbers that only goes up (a group that sold 2 and now 40 has level 20, and multiplies its whole month by
+             20), and summed over thousands of groups it multiplied the Pure-New acquisitions of Kamelot by 6 to 24.
+             The fine group gives the SHAPE (what it sold in the same month a year before); the level is aggregate.
+             A recent month of sales is only read when the extract reaches its due date (month + 12, up to
+             last_due_month): an extract that ends earlier has not seen those sales, and that is not a fall to zero
+             (no month seen: level 1, "sin_referencia")."""
+    current = configuration.calendar_boundaries()["current"]
+    acquisition = configuration.acquisition_column
+    level_dims = [column for column in configuration.acquisition_level_dims if column in dims_of_group.columns]
+    recent_months = list(pd.period_range(current - configuration.acquisition_level_window_months, current - 1, freq="M"))
+    if last_due_month is not None:
+        recent_months = [month for month in recent_months if month + configuration.one_year_term_months <= last_due_month]
+    before_months = [month - configuration.one_year_term_months for month in recent_months]
+    events = events.copy()
+    events["_clave_nivel"] = (join_columns(dims_of_group.loc[events["_grupo"]].reset_index(drop=True), level_dims).to_numpy()
+                              if level_dims else "cartera")
+    rows = []
+    for acquisition_value, block in events.groupby(acquisition):
+        recent_total = block.loc[block["_mes_evento"].isin(recent_months), "unidades"].sum()
+        before_total = block.loc[block["_mes_evento"].isin(before_months), "unidades"].sum()
+        portfolio_level = recent_total / before_total if before_total > 0 and recent_months else np.nan
+        keys = sorted(block["_clave_nivel"].unique()) if level_dims else ["cartera"]
+        for key in keys:
+            part = block[block["_clave_nivel"] == key] if level_dims else block
+            recent = part.loc[part["_mes_evento"].isin(recent_months), "unidades"].sum()
+            before = part.loc[part["_mes_evento"].isin(before_months), "unidades"].sum()
+            if before >= configuration.acquisition_level_min_units and before > 0 and recent_months:
+                level, origin = recent / before, "propio"
+            elif np.isfinite(portfolio_level):
+                level, origin = portfolio_level, "cartera"
+            else:
+                level, origin = 1.0, "sin_referencia"
+            rows.append({acquisition: acquisition_value, "clave_nivel": key, "unidades_recientes": float(recent),
+                         "unidades_antes": float(before), "nivel": float(level), "origen": origin})
+    return pd.DataFrame(rows, columns=[acquisition, "clave_nivel", "unidades_recientes", "unidades_antes", "nivel", "origen"])
+
+
+def simulate_acquisitions(fine_table: pd.DataFrame, window: list, carried: list, configuration: Config) -> pd.DataFrame:
+    """The acquisitions of the window, one line per group of dims and acquisition value, due 12 months later.
+
+    RULES:   units of a group in month m = what the group sold in m − 12 (the shape: the same month a year before,
+             Black Friday keeps its size) × the level of its acquisition value (acquisition_levels: aggregate, never
+             per fine group). A group that sold nothing in m − 12 sells nothing in m: the total of the month is
+             exactly what was sold a year before × the level. Value = units × the value per unit of the group over
+             the last acquisition_auv_window_months months of sales (of its acquisition value when the group has none).
+             Timevarying marks off, a 1-year term, acquisition_discount."""
+    if not configuration.acquisition_column or not configuration.acquisition_values:
+        return pd.DataFrame()
+    period, current = configuration.period_col, configuration.calendar_boundaries()["current"]
+    acquisition = configuration.acquisition_column
+    events, dims_of_group, _ = acquisition_events(fine_table, configuration)
+    if events.empty:
+        return pd.DataFrame()
+    levels = acquisition_levels(events, dims_of_group, configuration, last_due_month=fine_table[period].max())
+    level_dims = [column for column in configuration.acquisition_level_dims if column in dims_of_group.columns]
+    key_of_group = (join_columns(dims_of_group, level_dims) if level_dims
+                    else pd.Series("cartera", index=dims_of_group.index))
+    level_of = {(row[acquisition], row["clave_nivel"]): row["nivel"] for _, row in levels.iterrows()}
     auv_start = current - configuration.acquisition_auv_window_months
 
     rows = []
-    for acquisition_value, block in events.groupby(configuration.acquisition_column):
-        by_group = block.set_index(["_grupo", "_mes_evento"])["unidades"]
-        recent = block[block["_mes_evento"].isin(level_months)].groupby("_grupo")["unidades"].sum()
-        before = block[block["_mes_evento"].isin([month - configuration.one_year_term_months for month in level_months])].groupby("_grupo")["unidades"].sum()
-        level = (recent / before.replace(0, np.nan)).dropna()
-        total_level = recent.sum() / before.sum() if before.sum() > 0 else np.nan
+    for acquisition_value, block in events.groupby(acquisition):
         auv_window = block[block["_mes_evento"] >= auv_start]
         auv = auv_window.groupby("_grupo")["valor"].sum() / auv_window.groupby("_grupo")["unidades"].sum().replace(0, np.nan)
         total_auv = auv_window["valor"].sum() / auv_window["unidades"].sum() if auv_window["unidades"].sum() > 0 else np.nan
-        share = auv_window.groupby("_grupo")["unidades"].sum() / auv_window["unidades"].sum() if auv_window["unidades"].sum() > 0 else pd.Series(dtype=float)
-        total_by_month = block.groupby("_mes_evento")["unidades"].sum()
         for month in window:
-            for group in share.index:
-                same_month = by_group.get((group, month - configuration.one_year_term_months), np.nan)
-                group_level = level.get(group, np.nan)
-                by_share = not (np.isfinite(same_month) and np.isfinite(group_level))
-                units = (total_by_month.get(month - configuration.one_year_term_months, np.nan) * total_level * share[group]) if by_share else same_month * group_level
+            same_month = block[block["_mes_evento"] == month - configuration.one_year_term_months]
+            for group, units_a_year_before in zip(same_month["_grupo"], same_month["unidades"]):
+                level = level_of.get((acquisition_value, key_of_group[group]), 1.0)
+                units = units_a_year_before * level
                 if not np.isfinite(units) or units <= 0:
                     continue
                 unit_value = auv.get(group, np.nan)
                 unit_value = unit_value if np.isfinite(unit_value) else total_auv
                 row = dims_of_group.loc[group].to_dict()
-                row.update({configuration.acquisition_column: acquisition_value, period: month + configuration.one_year_term_months,
-                            configuration.pipeline_units_col: float(units),
-                            configuration.pipeline_usd_col: float(units * unit_value), "_por_cuota": int(by_share)})
+                row.update({acquisition: acquisition_value, period: month + configuration.one_year_term_months,
+                            configuration.pipeline_units_col: float(units), configuration.pipeline_usd_col: float(units * unit_value)})
                 rows.append(row)
     simulated = pd.DataFrame(rows)
     if simulated.empty:
         return simulated
-    for column_name in timevarying:
+    for column_name in configuration.structural_timevarying_dims:
         simulated[column_name] = inactive_value(fine_table[column_name])
     if configuration.term_column and configuration.term_column in fine_table.columns:
         simulated[configuration.term_column] = configuration.one_year_term_value
     if configuration.discount_value_column:
         simulated[configuration.discount_value_column] = configuration.acquisition_discount
     simulated[PIPELINE_ORIGIN_COLUMN] = PIPELINE_SIMULATED
-    return simulated.drop(columns="_por_cuota")
+    return simulated
+
+
+def acquisition_comparison(fine_table: pd.DataFrame, extension: pd.DataFrame, configuration: Config) -> pd.DataFrame:
+    """The simulated acquisitions against the same months a year before, per acquisition value and month of sale:
+    units and USD sold a year before (the 1-year acquisitions due in the window month), units and USD simulated (due
+    12 months later) and their ratio. A ratio far from the level means the simulation is not the shape × the level."""
+    acquisition, period = configuration.acquisition_column, configuration.period_col
+    window = configuration.simulation_window
+    if not acquisition or not window:
+        return pd.DataFrame()
+    events, _, _ = acquisition_events(fine_table, configuration)
+    rows = []
+    simulated = (extension[extension[PIPELINE_ORIGIN_COLUMN] == PIPELINE_SIMULATED]
+                 if len(extension) and PIPELINE_ORIGIN_COLUMN in extension.columns else pd.DataFrame())
+    for acquisition_value in configuration.acquisition_values:
+        for month in window:
+            before = events[(events[acquisition] == acquisition_value)
+                            & (events["_mes_evento"] == month - configuration.one_year_term_months)]
+            now = (simulated[(simulated[acquisition] == acquisition_value)
+                             & (simulated[period] == month + configuration.one_year_term_months)] if len(simulated) else pd.DataFrame())
+            units_before, usd_before = float(before["unidades"].sum()), float(before["valor"].sum())
+            units_now = float(now[configuration.pipeline_units_col].sum()) if len(now) else 0.0
+            usd_now = float(now[configuration.pipeline_usd_col].sum()) if len(now) else 0.0
+            rows.append({acquisition: acquisition_value, "mes_venta": month, "vence": month + configuration.one_year_term_months,
+                         "unidades_ano_anterior": units_before, "usd_ano_anterior": usd_before,
+                         "unidades_simuladas": units_now, "usd_simulado": usd_now,
+                         "ratio_unidades": units_now / units_before if units_before > 0 else np.nan})
+    return pd.DataFrame(rows)
 
 
 def with_ids(rows: pd.DataFrame, configuration: Config) -> pd.DataFrame:

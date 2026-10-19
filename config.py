@@ -378,8 +378,15 @@ class Config:
                                                              # neutral: nothing is known yet of its dormant, softcancel…
                                                                 # (they have different proportions)
     acquisition_discount: float = 0.4             # [CFG 17 IN] an acquisition is sold with this discount (it renews without it)
-    acquisition_level_window_months: int = 3      # [17] acquisition level: last 3 closed months vs the same months a year before
+    acquisition_level_window_months: int = 3      # [17] acquisition level: last 3 months sold vs the same months a year before
     acquisition_auv_window_months: int = 12       # [17] acquisition value per unit: Σ value / Σ units of the last 12 closed months
+    acquisition_level_dims: list = field(default_factory=list)   # [17] the level of the acquisitions is measured per these dims
+                                                  # (e.g. ["tr_regional_level_1"]); empty = per acquisition value over the
+                                                  # whole portfolio. Never per fine group: a ratio of small numbers explodes
+    acquisition_level_min_units: float = 1000.0   # [17] a level key needs this many units sold a year before; below, the level
+                                                  # of its acquisition value over the portfolio
+    acquisition_ratio_low: float = 0.5            # [17] simulated acquisitions over the same month a year before outside
+    acquisition_ratio_high: float = 2.0           # [17] [low, high]: WARN (the simulation is not the shape × a plausible level)
     # the confidence of a future row (step 17): how sure the forecast is of its rate
     confidence_high_band_pp: float = 5.0      # [17] high: its rate band within ±5 pp (the precision of own_rate_floor)…
     confidence_high_exam_pp: float = 5.0      # [17] …its composition judged by the backtest, with an exam error ≤ 5 pp

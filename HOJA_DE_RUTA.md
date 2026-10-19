@@ -136,6 +136,11 @@ PENDIENTE DE REVISAR CON DATOS REALES: en el log del paso 17 (acción 6), las fi
 ## Explorador interactivo en el notebook (18-oct-2026)
 - `sff_explorer.py`: nueve pestañas, del negocio a la auditoría (escalera, backtest, examen, uplift, marcas, parámetros), desde los resultados en memoria o desde las tablas SQL de una ejecución; exporta todo a un HTML. Lee, no recalcula. Ver DOC_modelo_datos.md.
 
+## Adquisición simulada: el nivel, agregado (19-oct-2026)
+- Con datos reales, la adquisición Pure-New simulada de sep–dic 2026 salía 6–24 veces lo vendido un año antes (4,57 M de unidades y $71,0M que vencen en 2027, frente a 0,31 M de unidades y $6,2M vendidos en sep–dic 2025), con un crecimiento agregado de 0,97. Causa: el nivel (ventas recientes / mismas meses un año antes) se medía por grupo fino; con miles de grupos pequeños el cociente de números pequeños solo sube y multiplicaba el mes entero del grupo.
+- Ahora la forma es por grupo (lo que vendió en el mismo mes un año antes) y el nivel es agregado por valor de adquisición (`acquisition_level_dims` para medirlo por región u otra dimensión, con `acquisition_level_min_units` de soporte mínimo). Un grupo que no vendió en ese mes no vende. Las ventas recientes solo se leen si el extracto llega a su vencimiento.
+- Pantalla y comprobación 7 del paso 17 (WARN fuera de `acquisition_ratio_low`–`acquisition_ratio_high`): ADQUISICIÓN SIMULADA FRENTE AL AÑO ANTERIOR. También en la pestaña Negocio del explorador.
+
 ## Mejoras para la versión final
 - Renumerar los pasos para que número = orden de ejecución (hoy: 17 → NU → 19 → 20 → 18 → IN).
 

@@ -48,7 +48,7 @@ def test_steps_15_to_18() -> None:
     configuration = synthetic_with()
     results = {}
     console = console_of(lambda: results.update(run(configuration)))
-    for label, count in (("15", 7), ("16", 3), ("17", 12)):
+    for label, count in (("15", 7), ("16", 3), ("17", 13)):
         check(f"{count} checks: {count} ok" in console.split(f"STEP {label}")[1], f"the checks of step {label} pass")
     check("7 checks:" in console.split("STEP 18")[1] and "0 failed" in console.split("STEP 18")[1].split("STEP NU")[0],
           "the final validation passes (warnings allowed)")
@@ -108,6 +108,35 @@ def test_steps_15_to_18() -> None:
           "the core carries the forecast of every future row: Σ s17_esperado_usd = Σ of the forecast")
     report = open(f"{configuration.output_folder}/informe_sff.md", encoding="utf-8").read()
     check("## 7 · El forecast en dinero" in report and "Validación final" in report, "the report tells the forecast and the validation")
+
+
+def test_the_level_of_the_acquisitions_is_aggregate() -> None:
+    print("L · the level of the acquisitions is aggregate: a small group that grew does not multiply its month")
+    from step_17_forecast import acquisition_events, acquisition_levels, simulate_acquisitions
+    configuration = synthetic_with(acquisition_column="newcust", acquisition_values=["pure"], acquisition_discount=0.4)
+    rows = []
+    for due_month in pd.period_range("2025-01", "2027-08", freq="M"):
+        sold_in = due_month - 12
+        # a big group, stable: 1,000 a month · a small one: 1 a month in 2025, 100 in September 2025, 50 a month in 2026
+        small = 100.0 if str(sold_in) == "2025-09" else (50.0 if sold_in.year == 2026 else 1.0)
+        for channel, units in (("web", 1000.0), ("tele", small)):
+            rows.append({"period": due_month, "region": "EU", "product": "A", "dormant": False, "softcancel": False,
+                         "no_instalado": False, "autorenew": False, "channel": channel, "newcust": "pure",
+                         "total_tr_units": units, "total_tr_usd": units * 10.0})
+    fine = pd.DataFrame(rows)
+    fine["rol"] = "entrenamiento"
+    carried = ["region", "product", "dormant", "softcancel", "no_instalado", "autorenew", "channel", "newcust"]
+    simulated = simulate_acquisitions(fine, [pd.Period("2026-09", freq="M")], carried, configuration)
+    level = (3000.0 + 150.0) / (3000.0 + 3.0)
+    check(abs(simulated["total_tr_units"].sum() - (1000.0 + 100.0) * level) < 1e-6,
+          "September: (1,000 + 100 sold a year before) × the level of the portfolio (3,150 / 3,003) = 1,154 units, not "
+          "1,000 + 100 × 50 = 6,000 (the level of the small group alone)")
+    events, dims, _ = acquisition_events(fine, configuration)
+    by_region = acquisition_levels(events, dims, synthetic_with(acquisition_column="newcust", acquisition_values=["pure"],
+                                                                acquisition_level_dims=["channel"], acquisition_level_min_units=100))
+    origins = by_region.set_index("clave_nivel")["origen"].to_dict()
+    check(origins == {"web": "propio", "tele": "cartera"},
+          "per channel: web has its own level (3,000 units a year before ≥ 100); tele (3) takes the level of the portfolio")
 
 
 def test_a_projected_renewal_is_a_retention() -> None:
@@ -233,6 +262,7 @@ def test_the_distribution_of_the_marks() -> None:
 if __name__ == "__main__":
     test_steps_15_to_18()
     test_acquisition_simulation()
+    test_the_level_of_the_acquisitions_is_aggregate()
     test_the_distribution_of_the_marks()
     test_a_projected_renewal_is_a_retention()
     finish()
