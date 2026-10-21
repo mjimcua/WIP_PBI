@@ -16,8 +16,8 @@ What it holds (grows with the steps that need it):
       configuration.log_check_summary()   the count of the checks; stops if any FAILED
       configuration.logger.doc(...)       any explanation or summary line        (blue)
       configuration.show_table(...)       concrete rows, as a pandas table (never logged)
-  · THE IDS AND KEYS: how a row names its rate series, its forecast unit and its
-    uplift cell (joined text ids), and their keys (a hash of each id).
+  · THE IDS: how a row names its rate series, its forecast unit and its uplift cell
+    (joined text ids; the core and the BI join on them).
   · THE DISCOUNT: ONE column of the extract (the exact discount, a share: 0.25 = 25 %)
     serves both sides. As it is, it feeds the contract rule of the uplift
     (1 / (1 − discount)) and is part of the identity of a fine row. Cut into buckets
@@ -27,15 +27,13 @@ What it holds (grows with the steps that need it):
   · THE TABLES: where they are written (a SQL engine, or CSV files when there is none).
     Every table is read back after writing and its row count checked.
 
-What it does not hold yet: parameters of later steps, keys and ids, persistence. Each
-arrives with the step that needs it.
+Every parameter of every step is here, tagged with the steps that read it ([..]); a test checks the tags.
 
 Usage: subclass Config in main.py, override `read_raw()` and declare the columns there.
 """
 
 # ─── imports ─────────────────────────────────────────────────────────────────────
 import datetime
-import hashlib
 import logging
 import os
 import re
@@ -63,6 +61,8 @@ COLUMN_ROLE_EXTRA_REVALORIZACION = "extra_revalorizacion"
 COLUMN_ROLE_BOTH_EXTRAS = "extra_renovacion+extra_revalorizacion"
 COLUMN_ROLE_FORMULA_INPUT = "formula_input"
 COLUMN_ROLE_IGNORE = "ignore"
+COLUMN_ROLE_MATURATION = "maturation"
+MATURATION_COLUMN_INFIX = "_month_"     # <mark>_month_<k>: the units of the row whose mark was set k months before due
 
 # The name of the framework's logger (a named logger: other libraries keep their own).
 LOGGER_NAME = "sff"
@@ -71,7 +71,6 @@ LOGGER_NAME = "sff"
 ID_FIELD_SEPARATOR = "|"
 COMBINED_ID_SEPARATOR = "||"
 NO_REVALUATION_VALUES = "na"      # the revaluation part of a fine row when no extra_revalorizacion is declared
-HASH_HEX_DIGITS = 12              # 48 bits: fits a SQL bigint
 NULL_ID_TEXT = "null"             # how a null value is written inside an id (e.g. an unknown exact discount)
 
 # The status of a check, and the level it is logged at.
@@ -138,6 +137,16 @@ def is_one_year(rows: pd.DataFrame, configuration) -> pd.Series:
     return rows[configuration.term_column].astype(str) == str(configuration.one_year_term_value)
 
 
+def has_no_negative_mark(rows: pd.DataFrame, configuration) -> pd.Series:
+    """The rows without any negative timevarying mark on (no softcancel, no dormant, no not_installed…): the
+    neutral renewals, the ones the contract rule speaks of."""
+    neutral = pd.Series(True, index=rows.index)
+    for column_name, sign in configuration.structural_timevarying_dims.items():
+        if sign == "negative" and column_name in rows.columns:
+            neutral &= ~rows[column_name].isin(ACTIVE_FLAG_VALUES)
+    return neutral
+
+
 ROLE_PURPOSES = [
     (COLUMN_ROLE_PERIOD, "the month of the row"),
     (COLUMN_ROLE_TIME_SERIES_FLAG, "1 = the time_series universe (retail to subscription), projected apart (step 20)"),
@@ -148,6 +157,7 @@ ROLE_PURPOSES = [
     (COLUMN_ROLE_EXTRA_REVALORIZACION, "open the uplift cell (the price), not the rate"),
     (COLUMN_ROLE_BOTH_EXTRAS, "both extras"),
     (COLUMN_ROLE_FORMULA_INPUT, "inputs of a formula (exact discount, SKU), not a dimension"),
+    (COLUMN_ROLE_MATURATION, "when a mark was set: <mark>_month_<k> = its units marked k months before due (steps 17, 19)"),
     (COLUMN_ROLE_IGNORE, "read and not used")]
 LEVELED_ROLE = "niveles generados (01)"
 GENERATED_LEVEL_SUFFIX = "_level_1"           # the coarse level the library generates for a leveled dim
@@ -243,12 +253,6 @@ def id_text(values: pd.Series) -> np.ndarray:
     return texts
 
 
-def hash_key(identifier) -> int:
-    """The key of an id: the first 12 hex digits of MD5(id) as an integer. The same id
-    gives the same key on any machine and in any run (keys are derived, never assigned)."""
-    return int(hashlib.md5(str(identifier).encode("utf-8")).hexdigest()[:HASH_HEX_DIGITS], 16)
-
-
 def running_in_notebook() -> bool:
     """True inside a Jupyter notebook (where display() renders an HTML table)."""
     try:
@@ -271,11 +275,11 @@ class Config:
                                           # diagnostics write their reproduction queries on top of it
 
     # ─── the columns of the raw, by role ────────────────────────────────────────────
-    period_col: str = "period"                              # [CFG ORQ 00 01 02 03 04 05 06 07 08 10 12 13 14 15 16 17 18 19 20 21 AUD NU IN] the month of the row
-    pipeline_units_col: str = "total_tr_units"              # [CFG 01 02 03 04 06 07 08 10 12 15 17 19 20 21 AUD NU] subscriptions falling due
-    pipeline_usd_col: str = "total_tr_usd"                  # [CFG 01 02 03 04 06 07 15 17 18 20 21 NU IN] their value at due date
-    renewed_units_col: str = "total_renewed_units"          # [CFG 01 02 04 08 10 12 15 17 19 20 21 AUD NU] subscriptions renewed
-    renewed_usd_col: str = "total_renewed_usd"              # [CFG 01 02 15 17 18 20 21 NU] their value at renewal
+    period_col: str = "period"                              # [CFG ORQ 00 01 02 03 04 06 08 10 12 13 14 15 16 17 18 19 20 21 AUD NU IN] the month of the row
+    pipeline_units_col: str = "total_tr_units"              # [CFG 01 02 03 04 06 08 10 12 13 15 17 19 20 21 AUD NU IN] subscriptions falling due
+    pipeline_usd_col: str = "total_tr_usd"                  # [CFG 01 02 03 04 06 15 17 18 19 20 21 NU IN] their value at due date
+    renewed_units_col: str = "total_renewed_units"          # [CFG 01 02 04 08 10 12 13 15 17 19 20 21 AUD NU] subscriptions renewed
+    renewed_usd_col: str = "total_renewed_usd"              # [CFG 01 02 15 17 18 19 20 21 NU IN] their value at renewal
     extra_measure_cols: list = field(default_factory=list)  # [CFG 03] other measures (reacquisitions, AUVs): declared, not used yet
     renewed_pipeline_usd_col: Optional[str] = None  # [CFG 01 15] the USD that was FALLING DUE of the contracts that RENEWED
                                                     # (built per licence, then summed): the exact base of the uplift.
@@ -302,7 +306,7 @@ class Config:
     isolated_tr_usd_renewed_105_110_col: Optional[str] = None  # [CFG] ... ratio in [1.05, 1.10)
     isolated_tr_usd_renewed_110_120_col: Optional[str] = None  # [CFG] ... ratio in [1.10, 1.20)
     isolated_tr_usd_renewed_ge120_col: Optional[str] = None    # [CFG] ... ratio ≥ 1.20 (the six add up to the isolated base)
-    flag_time_series_col: str = "flag_time_series"          # [CFG 01 04 06] marks the rows of the time_series universe
+    flag_time_series_col: str = "flag_time_series"          # [CFG 01] marks the rows of the time_series universe
 
     business_mandatory_dims: list = field(default_factory=list)       # [CFG 01 09 10 15 17 19] open the series and the uplift cell
     leveled_dims: dict = field(default_factory=dict)  # [CFG 01] mandatory dims that get a generated coarse level (step 01):
@@ -315,18 +319,25 @@ class Config:
     level_merge_max_pp: Optional[float] = None        # [01] two neighbouring values merge while their standardised rates differ
                                                       # by at most this (pp). None: the binomial noise of a series at the
                                                       # support floor, 100·√(p(1−p)/support_floor), p = the training rate
-    structural_timevarying_dims: dict = field(default_factory=dict)   # [CFG 01 08 10 17] column → "negative" | "positive"
+    structural_timevarying_dims: dict = field(default_factory=dict)   # [CFG 01 08 10 17 19 IN] column → "negative" | "positive"
     distribute_marks: bool = True   # [17] the negative marks still to come are distributed in their historical
                                     # proportion (step 17, action 7): the forecast carries them. False = today's marks
+    maturation_dims: list = field(default_factory=list)  # [CFG 01 17 19 IN] the marks whose extract says WHEN they were set:
+                                                      # every one carries <mark>_month_0 … <mark>_month_<maturation_months>
+                                                      # (the units of the row marked k months before due; 0 = the due month,
+                                                      # the last one = that many months or more). Step 00 fails without them.
+                                                      # Their marks still to come follow the maturation curve (step 17) and
+                                                      # the honest exam sees them as they were h months before (step 19)
+    maturation_months: int = 12                       # [CFG 17 19] the last k of the maturation columns
     extra_renovacion: list = field(default_factory=list)              # [CFG 01 09 10] enter the rate series only
-    extra_revalorizacion: list = field(default_factory=list)          # [CFG 01 04 17 NU] enter the uplift cell only
+    extra_revalorizacion: list = field(default_factory=list)          # [CFG 01 17 NU] enter the uplift cell only
 
-    uplift_mandatory_dims: Optional[list] = None      # [CFG 15 17] mandatory dims of the uplift cell; None = all of them
+    uplift_mandatory_dims: Optional[list] = None      # [CFG 15 17] mandatory dims of the uplift cell; None or [] = all of them
     # the discount: one column, both sides (see the module header). None = no discount in the extract
     discount_value_column: Optional[str] = "discount"          # [CFG 01 03 15 16 17 NU IN] the exact discount, a share (0.25 = 25 %)
     discount_bucket_edges: list = field(default_factory=lambda: [0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100])  # [CFG 03 17 IN] in %
     discount_bucket_column: str = "tramo_descuento"            # [CFG 03 15 17 NU IN] the derived bucket (a dimension of the uplift cell)
-    sku_column: Optional[str] = None              # [CFG] the SKU (formula input for the price scenarios)
+    sku_column: Optional[str] = None              # [CFG 15] the SKU (formula input for the price scenarios)
     ignore_cols: list = field(default_factory=list)   # [CFG] read by nobody; may be absent from the raw
 
     # ─── the calendar (the role of every month is generated from it) ────────────────
@@ -337,16 +348,15 @@ class Config:
     test_months: int = 3                  # [CFG] closed months before it that only evaluate
 
     # ─── statistical parameters ────────────────────────────────────────────────────
-    z: float = 1.645                      # [07 08 IN] 90 % two-sided: every band and every binomial error uses it
+    z: float = 1.645                      # [08 IN] 90 % two-sided: every band and every binomial error uses it
     support_floor: float = 30.0           # [01 08 10 11 12 13 AUD IN] contracts in a typical month below which a series' own rate
                                           # moves ±15 pp by chance (90 %, p = 0.5): it will borrow support
 
-    dimension_pairs_shown: int = 20       # [09] step 09: pairs of dimensions kept, the ones with the most interaction
     # ─── the ladder (steps 10 and 11) ───
-    own_rate_floor: float = 271.0   # [10 11 IN]
-    collapse_passes: int = 2            # [10] stage 3 merges at most this many mandatory dims (collapse order); the passes
-                                        # after them are only searched for a credibility reference (stage 4)         # contracts in a typical month to predict ALONE: ±5 pp at 90 % (p = 0.5).
+    own_rate_floor: float = 271.0         # [10 11 IN] contracts in a typical month to predict ALONE: ±5 pp at 90 % (p = 0.5).
                                           # 30 says who may speak; 271 who may speak alone
+    collapse_passes: int = 2              # [10] stage 3 merges at most this many mandatory dims (collapse order); the passes
+                                          # after them are only searched for a credibility reference (stage 4)
     k_cred: float = 60.0                  # [11 AUD] Bühlmann k when a relative has too few siblings to estimate it: a series
                                           # with n = 30 keeps 33 % of its own rate ("twice the floor to be believed half")
     own_level_min_history_months: int = 12    # [11] a full year to be level A (a seasonal series has seen every season)
@@ -391,13 +401,13 @@ class Config:
     confidence_high_band_pp: float = 5.0      # [17] high: its rate band within ±5 pp (the precision of own_rate_floor)…
     confidence_high_exam_pp: float = 5.0      # [17] …its composition judged by the backtest, with an exam error ≤ 5 pp
     confidence_medium_band_pp: float = 10.0   # [17] medium: judged, and a band within ±10 pp; low: the rest (or not judged)
-    apply_credibility_shift: bool = True  # [17 19 AUD IN] a group below own_rate_floor moves its predicted rate toward its credibility
+    apply_credibility_shift: bool = True  # [17 19 IN] a group below own_rate_floor moves its predicted rate toward its credibility
                                           # reference by (1 − z) of their difference of level (logit scale); False = the
                                           # group's prediction as is
 
-    # ─── the spreadsheet baseline (step 19): what the business does today ───
-    baseline_months: int = 12             # [19 IN] the rate of the last N closed months… (what the business does: 12 months per cell)
-    baseline_grains: list = field(default_factory=lambda: ["mandatory", "global"])   # [19] …per grain: "global", "mandatory"
+    # ─── the baseline (step 19): the calculation anyone could make, THE reference of every gain ───
+    baseline_months: int = 3              # [19 IN] the rate of its mandatory cell over the last N closed months known at the
+                                          # origin (the portfolio's when the cell has nothing), × what falls due
                                           # (every mandatory dim) or columns joined with "+" (e.g. "region+product")
     # ─── the time_series universe: retail to subscription (step 20) ───
     ts_region_columns: list = field(default_factory=list)   # [CFG] the region levels of a time_series row, coarse to fine;
@@ -410,13 +420,14 @@ class Config:
     ts_rate_window_months: int = 12           # [20] the renewal rate of the region in the normal pipeline: last 12 closed months
     ts_acquisition_discount: float = 0.4      # [CFG 20] retail-to-subscription offers: acquired at 40 % off, renewed at 100 %
     # ─── the backtest of the rate (step 14) ───
-    challenger_technique: str = "T3_ma3"  # [14 17 19 IN] the technique to beat: the moving average of 3 months (what a spreadsheet does)
+    default_technique: str = "T3_ma3"     # [14 17 19 IN] the technique to beat: the mean of the last 3 monthly rates (in logit)
+                                          # of the composition; another one is chosen only if it beats it in the selection months
     backtest_selection_months: int = 6    # [14 IN] closed months BEFORE the exam used as targets to CHOOSE the technique
-    backtest_horizons: list = field(default_factory=lambda: [1, 6])   # [14 19] months ahead judged: next month, and six months
+    backtest_horizons: list = field(default_factory=lambda: [1, 6])   # [14 17 19 IN] months ahead judged: next month, and six months
     horizon_bands: dict = field(default_factory=lambda: {"corto": [1, 1], "medio_largo": [2, 6]})   # [14 17 19 AUD NU IN] a horizon between
                                           # two judged ones takes the band of the judged one above it (the wider)
-    challenger_margin_by_band: dict = field(default_factory=lambda: {"corto": 0.10, "medio_largo": 0.0})  # [14] how much a
-                                          # technique must beat the challenger (in |error| / binomial error) to replace it
+    default_margin_by_band: dict = field(default_factory=lambda: {"corto": 0.10, "medio_largo": 0.0})  # [14] how much a
+                                          # technique must beat the default technique (in |error| / binomial error) to replace it
     backtest_min_history_months: int = 12 # [14] months a technique must see before predicting (every technique can compete)
     backtest_min_predictions: int = 3     # [14] predictions a technique needs in a band to be chosen
     band_low_quantile: float = 0.05       # [14] the error band: 5 % and 95 % quantiles of the normalised error (90 %)
@@ -429,23 +440,20 @@ class Config:
     # ═══════════════════════════════════════════════════════════════════════════════
     # Not here, on purpose: DEFINITIONS, not choices (changing them would make the code wrong, not tuned):
     # 100 percentage points, 12 months a year, the largest binomial variance (0.25), the stage numbers of the
-    # ladder, the windows a technique is named after (T3_ma3 = 3 months) and their minimum history, the 12
-    # hex digits of an id (a SQL bigint), the bands of the isolated ratio (ISOLATED_RATIO_BANDS: they are
+    # ladder, the windows a technique is named after (T3_ma3 = 3 months) and their minimum history, the bands of the isolated ratio (ISOLATED_RATIO_BANDS: they are
     # the extract's columns).
     # ─── checks of several steps (01, 02, 04, 10, 17, 18, 20, NU) ───
     money_tolerance: float = 0.01                 # [01 02 04 10 17 18 20 NU] two money figures "match" within this (USD)
     example_rows_shown: int = 3                   # [CFG 03] example rows shown under a failed check (every step's checks)
     measure_relative_tolerance: float = 1e-6      # [01] relative margin of the checks between a measure and its whole
     money_relative_tolerance: float = 1e-9        # [04] relative margin of the money conserved from rows to units
-    units_tolerance: float = 1e-6                 # [19 21 AUD] two unit counts "match" within this
+    units_tolerance: float = 1e-6                 # [01 19 21 AUD] two unit counts "match" within this
     rate_tolerance: float = 1e-9                  # [AUD] two rates "match" within this
     support_tolerance: float = 1e-9               # [10 12] two supports "match" within this
     rounding_tolerance: float = 1e-9              # [11] margin for rounding when comparing z and supports
     # ─── step 02 · the calendar ───
     min_training_months: int = 12                 # [02] fewer training months: the calendar is not valid
     one_year_term_months: int = 12                # [02 17] months between the sale and the due date of a 1-year licence
-    # ─── step 07 · the support bound ───
-    min_support_units: int = 1                    # [07] a unit with nothing due is bounded as if it had this many contracts
     # ─── step 08 · the rate series ───
     no_evidence_rate: float = 0.5                 # [08] the rate the Wilson error is computed at for a series with no own rate
     largest_series_shown: int = 5                 # [08 12] the biggest series listed on screen
@@ -481,8 +489,7 @@ class Config:
     min_uplift: float = 0.01                      # [15] the lowest uplift accepted
     uplift_band_low: float = 0.05                 # [15] the uplift band: this percentile of the bootstrap...
     uplift_band_high: float = 0.95                # [15] ...to this one
-    contract_tolerance: float = 0.02              # [15] a renewal "matches" the contract rule within ± this of 1/(1−d)
-    contract_discount_cap: float = 0.99           # [15 16 17] the discount is capped here before 1/(1−d)
+    contract_discount_cap: float = 0.99           # [15] the discount is capped here before 1/(1−d) (in contract_rule, which 16 and 17 call)
     # ─── step 15 · the revaluation report (action 9) ───
     revaluation_window_months: int = 12           # [15] the distribution is measured over the last N closed months
     revaluation_monthly_months: int = 24          # [15] the monthly path shows the last N closed months
@@ -507,14 +514,17 @@ class Config:
                                                   # increases) and the increase is applied again to the future months still
                                                   # inside its cycle; after the cycle its effect is lost
     price_increases_shown: int = 15               # [15] increases (and unconfirmed steps) with a VALORACIÓN line on screen
+    price_series_shown: int = 5                   # [15] forecast series with the most money in a group with an increase,
+                                                  # shown month by month so the step can be seen
+    price_series_months_shown: int = 36           # [15] the closed months shown for each of them
     # ─── step 17 · the maturation of the mark ───
-    maturation_min_units: float = 100.0           # [17] a cell (or its calendar month) needs this many units to measure itself
-    maturation_history_months: int = 12           # [17] the final marks are measured over the last N closed months
+    maturation_min_units: float = 100.0           # [17 19] a cell (or its calendar month) needs this many units to measure itself
+    maturation_history_months: int = 12           # [17 19 IN] the final marks are measured over the last N closed months
     mark_excess_warning_pp: float = 2.0           # [17] a future month whose mark (dormant…) is TODAY this many points above
                                                   # its final share in the history: WARN (a mark only grows, so the extract
                                                   # marks too much, e.g. a fresh cohort marked dormant before its first use)
     # ─── step 18 · the validation ───
-    max_rate_jump_pp: float = 15.0                # [18] a jump of the rate between consecutive months above this is flagged
+    max_rate_jump_pp: float = 15.0                # [18] a future year whose rate moves more than this from the last closed year is flagged
     max_exam_total_error: float = 0.10            # [18] the exam's total error above this share is flagged
     # ─── step 19 · the series exam ───
     exam_min_months_to_predict: int = 3           # [19] fewer own months: the raw method takes the series' own level
@@ -529,10 +539,10 @@ class Config:
     core_months_shown: int = 6                    # [NU] months shown on screen by the core
 
     # ─── where the tables are written ───────────────────────────────────────────────
-    sql_engine: Optional[object] = None   # [CFG] a SQLAlchemy engine; None → CSV files in output_folder
-    sql_schema: Optional[str] = None      # [CFG] "dbo" in SQL Server; None in SQLite
-    table_prefix: str = "sff_"            # [CFG 05] every table the framework writes starts with it
-    output_folder: str = "salida"         # [CFG 01 IN] where the CSV tables go when there is no engine
+    sql_engine: Optional[object] = None   # [CFG ORQ] a SQLAlchemy engine; None → CSV files in output_folder
+    sql_schema: Optional[str] = None      # [CFG ORQ] "dbo" in SQL Server; None in SQLite
+    table_prefix: str = "sff_"            # [CFG ORQ] every table the framework writes starts with it
+    output_folder: str = "salida"         # [CFG ORQ 01 IN] where the CSV tables go when there is no engine
 
     # ─── the log (configured once, when the Config is built) ────────────────────────
     log_level: str = "INFO"               # [CFG] DEBUG · INFO · WARNING · ERROR
@@ -546,13 +556,6 @@ class Config:
     def read_raw(self) -> pd.DataFrame:
         """The raw extract. Overridden by the Config of main.py (SQL, CSV, synthetic)."""
         raise NotImplementedError("override read_raw() in your Config subclass (main.py)")
-
-    def read_time_series(self) -> Optional[pd.DataFrame]:
-        """The history of the time_series universe (retail-to-subscription conversions), one row
-        per region × month with the columns: period, region, unidades, valor. Overridden by the
-        Config of main.py when it comes from its own query. None (the default) = step 20 takes it
-        from the rows of the raw with the time_series flag."""
-        return None
 
     # ═══════════════════════════════════════════════════════════════════════════════
     # THE COLUMN CONTRACT
@@ -571,8 +574,14 @@ class Config:
         if invalid_signs:
             raise ValueError(f"timevarying signs must be one of {VALID_TIMEVARYING_SIGNS}: {invalid_signs}")
 
-        # [2] the leveled dims: mandatory, with a valid type; their generated level is a mandatory dim from
-        #     here on (step 01 creates it before any step reads the dims)
+        # [2] the marks with maturation columns are declared timevarying dims; the leveled dims: mandatory, with a
+        #     valid type; their generated level is a mandatory dim from here on (step 01 creates it before any step
+        #     reads the dims)
+        not_timevarying = [mark for mark in self.maturation_dims if mark not in self.structural_timevarying_dims]
+        if not_timevarying:
+            raise ValueError(f"maturation_dims must be structural_timevarying_dims: {not_timevarying}")
+        if int(self.maturation_months) < 1:
+            raise ValueError(f"maturation_months must be at least 1 (found {self.maturation_months})")
         not_mandatory = [column_name for column_name in self.leveled_dims if column_name not in self.business_mandatory_dims]
         if not_mandatory:
             raise ValueError(f"leveled_dims must be mandatory dims: {not_mandatory}")
@@ -841,7 +850,7 @@ class Config:
         """The columns of ONE uplift cell (the price context): the uplift mandatory dims
         (all mandatory unless uplift_mandatory_dims says fewer) + extra_revalorizacion +
         the discount bucket derived from the exact discount (when there is one)."""
-        uplift_mandatory = self.uplift_mandatory_dims if self.uplift_mandatory_dims is not None else self.business_mandatory_dims
+        uplift_mandatory = self.uplift_mandatory_dims or self.business_mandatory_dims      # None or [] = all, as steps 15 and 17
         bucket = [self.discount_bucket_column] if self.discount_value_column else []
         return list(uplift_mandatory) + self.extra_revalorizacion + bucket
 
@@ -851,6 +860,15 @@ class Config:
         values and the exact discount (the extract comes one row per exact discount)."""
         exact_discount = [self.discount_value_column] if self.discount_value_column else []
         return self.extra_revalorizacion + exact_discount
+
+    def maturation_columns_of(self, mark: str) -> list:
+        """The maturation columns of one mark, k = 0 … maturation_months (the last one: that many months or more)."""
+        return [f"{mark}{MATURATION_COLUMN_INFIX}{months_before}" for months_before in range(int(self.maturation_months) + 1)]
+
+    @property
+    def maturation_columns(self) -> list:
+        """Every maturation column the Config declares, mark by mark."""
+        return [column for mark in self.maturation_dims for column in self.maturation_columns_of(mark)]
 
     @property
     def core_measures(self) -> list:
@@ -880,6 +898,8 @@ class Config:
         for formula_input_column in (self.discount_value_column, self.sku_column):
             if formula_input_column:
                 declared_pairs.append((formula_input_column, COLUMN_ROLE_FORMULA_INPUT))
+        for maturation_column in self.maturation_columns:
+            declared_pairs.append((maturation_column, COLUMN_ROLE_MATURATION))
         for ignored_column in self.ignore_cols:
             declared_pairs.append((ignored_column, COLUMN_ROLE_IGNORE))
 
@@ -944,7 +964,8 @@ MODULE_LABELS = {"step_audit.py": "AUD", "step_informe.py": "IN", "step_nucleo.p
 TECHNIQUE_USERS = ["14", "17", "19", "AUD"]          # the steps that call the techniques
 PREDICTION_USERS = ["17", "19", "AUD"]               # the steps that call the credibility shift
 # the shared modules that read the Config themselves (configuration.<field>), and the steps that call them
-SHARED_MODULE_USERS = {"price_increases.py": ["15", "16", "22"]}
+SHARED_MODULE_USERS = {"price_increases.py": ["15", "16", "22"], "maturation.py": ["17", "19"],
+                       "resumen_negocio.py": ["IN"], "graficos.py": ["IN"]}
 LABEL_ORDER = ["CFG", "ORQ"] + [f"{number:02d}" for number in range(23)] + ["AUD", "NU", "IN"]
 
 

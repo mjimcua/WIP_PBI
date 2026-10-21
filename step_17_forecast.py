@@ -75,7 +75,7 @@ Actions (logged as they are done):
   7. the distribution of the timevarying marks still to come: the forecast with them
   8. the totals by month and by year
   9. check the forecast                                              checks 1-9
- 10. write the forecast, the months, the summary and the maturation  checks 10-13
+ 10. write the months, the summary and the maturation                checks 10-12
  11. count the checks; stop if any failed
  12. show the forecast by month, the answers by year and the maturation, as tables; the detector of
      marks above their final share (MARCAS POR ENCIMA DE SU PROPORCIÓN FINAL)
@@ -93,26 +93,27 @@ Checks (logged as they are made, numbered, at the level of their status):
    9. no negative mark is TODAY above its final share by mark_excess_warning_pp or more in any future
       month (WARN: the extract marks too early, e.g. a fresh cohort marked dormant; the detector says
       which months and what it costs the forecast)
-   10-13. tables sff_forecast, sff_forecast_mes, sff_resumen_negocio, sff_forecast_maduracion written
-        and read back
+   10-12. tables sff_forecast_mes, sff_resumen_negocio, sff_forecast_maduracion written and read back
 
-Output: (the forecast row by row, by month, by year) · tables sff_forecast, sff_forecast_mes,
-sff_resumen_negocio.
+Output: (the forecast row by row, by month, by year) · tables sff_forecast_mes, sff_resumen_negocio,
+sff_forecast_maduracion. The forecast row by row reaches sff_nucleo (step NU).
 """
 
 # ─── imports ─────────────────────────────────────────────────────────────────────
 import numpy as np
 import pandas as pd
 
-from config import ACTIVE_FLAG_VALUES, Config, discount_bucket_labels, is_one_year, join_columns, parse_month
+from config import (ACTIVE_FLAG_VALUES, Config, discount_bucket_labels, has_no_negative_mark, is_one_year, join_columns)
 from step_14_backtest import band_of_horizon
+from step_15_uplift import contract_rule
 from prediction import band_quantiles, index_history, predict_composition, rate_band, shifted_rate
+from maturation import CELL_LEVEL, GROUP_LEVEL, MaturationCurve, examine_the_curve, visible_units
 from price_increases import increase_factor, price_group_of
-from techniques import inverse_logit, logit, predict_logit
-from vocabulario import (CALENDAR_ROLE_COLUMN, COMPOSITION_ID_COLUMN, GATE_LEVEL, PATH_CONTRACT, PATH_STATISTICAL,
+from techniques import logit
+from vocabulario import (CALENDAR_ROLE_COLUMN, COMPOSITION_ID_COLUMN, GATE_LEVEL, PATH_CONTRACT, PATH_CONTRACT_NEUTRAL, PATH_STATISTICAL,
                          PIPELINE_ORIGIN_COLUMN, PIPELINE_PROJECTED, PIPELINE_REAL, PIPELINE_SIMULATED, RATE_COLUMN,
-                         RATE_FROM_CELL, RATE_FROM_GLOBAL, RATE_FROM_POOL, ROLE_PROJECTION, SERIES_ID_COLUMN,
-                         TABLE_BUSINESS_SUMMARY, TABLE_FORECAST, TABLE_FORECAST_MATURATION, TABLE_FORECAST_MONTH,
+                         RATE_FROM_CELL, RATE_FROM_GLOBAL, RATE_FROM_POOL, ROLE_PROJECTION, ROLE_TEST, SERIES_ID_COLUMN,
+                         TABLE_BUSINESS_SUMMARY, TABLE_FORECAST_MATURATION, TABLE_FORECAST_MONTH,
                          TRUTH_ROLES, UNIT_ID_COLUMN, UPLIFT_CELL_ID_COLUMN)
 
 
@@ -131,12 +132,11 @@ STEP_ACTIONS = ["the future rows of the extract",
                 "the distribution of the timevarying marks still to come: the forecast with them",
                 "the totals by month and by year, by origin of the pipeline",
                 "check the forecast (checks 1-9)",
-                "write the forecast, the months, the summary and the maturation (checks 10-13)",
+                "write the months, the summary and the maturation (checks 10-12)",
                 "count the checks; stop if any failed",
                 "show the forecast by month, the answers by year and the maturation, as tables"]
-STEP_OUTPUT = "every future row with rate, uplift, expected USD and bands · totals by month and year · three tables"
+STEP_OUTPUT = "every future row with rate, uplift, expected USD and bands (in memory) · totals by month and year · three tables"
 
-PERCENTAGE_POINTS = 100
 
 
 def assemble_forecast(fine_table: pd.DataFrame, forecast_units: pd.DataFrame, series_estimate: pd.DataFrame,
@@ -215,7 +215,7 @@ def assemble_forecast(fine_table: pd.DataFrame, forecast_units: pd.DataFrame, se
 
     # [9] the checks
     configuration.log_action(STEP_LABEL, 9, "checking the forecast")
-    check_forecast(future, future, fine_table, by_month, configuration, check_log)
+    check_forecast(future, fine_table, by_month, configuration, check_log)
     after_renewal = dict(configuration.dims_after_renewal)
     if configuration.acquisition_column and configuration.renewed_acquisition_value is not None:
         after_renewal[configuration.acquisition_column] = configuration.renewed_acquisition_value
@@ -266,20 +266,8 @@ def assemble_forecast(fine_table: pd.DataFrame, forecast_units: pd.DataFrame, se
                                 + " · see MARCAS POR ENCIMA DE SU PROPORCIÓN FINAL",
                                 blocking=False, context=f"{len(marks_detector):,} month × mark pairs looked at")
 
-    # [10] the tables
-    configuration.log_action(STEP_LABEL, 10, "writing the forecast, the months, the summary and the maturation")
-    forecast_columns = ([period_column, "h", PIPELINE_ORIGIN_COLUMN, SERIES_ID_COLUMN, UNIT_ID_COLUMN, UPLIFT_CELL_ID_COLUMN,
-                         COMPOSITION_ID_COLUMN, configuration.pipeline_units_col, configuration.pipeline_usd_col, "origen_tasa",
-                         "tecnica", "tasa", "tasa_baja", "tasa_alta", "confidence", "via_uplift", "uplift", "uplift_bajo", "uplift_alto",
-                         "factor_subida",
-                         "esperado_unidades", "esperado_usd", "esperado_usd_bajo", "esperado_usd_alto",
-                         "esperado_unidades_base", "esperado_usd_base",
-                         "maduracion_l", "maduracion_unidades_migran", "maduracion_delta_unidades", "maduracion_delta_usd"]
-                        + configuration.rate_series_columns + configuration.extra_revalorizacion
-                        + ([configuration.discount_value_column, configuration.discount_bucket_column]
-                           if configuration.discount_value_column else []))
-    forecast_columns = list(dict.fromkeys(forecast_columns))
-    configuration.write_table(STEP_LABEL, check_log, future[forecast_columns], TABLE_FORECAST)
+    # [10] the tables (the forecast row by row is not a table: sff_nucleo carries every future row with its forecast)
+    configuration.log_action(STEP_LABEL, 10, "writing the months, the summary and the maturation")
     configuration.write_table(STEP_LABEL, check_log, by_month, TABLE_FORECAST_MONTH)
     configuration.write_table(STEP_LABEL, check_log, by_year, TABLE_BUSINESS_SUMMARY)
     if maturation is not None:
@@ -298,9 +286,10 @@ def assemble_forecast(fine_table: pd.DataFrame, forecast_units: pd.DataFrame, se
     configuration.show_table(by_year)
     show_acquisitions(acquisitions, fine_table, configuration)
     if maturation is not None:
+        show_maturation_curves(fine_table, configuration)
         show_distribution(maturation, configuration)
         show_marks_above_final(marks_detector, configuration)
-    timevarying_diagnostic(future, fine_table, configuration)
+    show_what_every_combination_renews(fine_table, configuration)
     result = dict(forecast=future, by_month=by_month, by_year=by_year)
     if maturation is not None:
         result["maturation"] = maturation
@@ -312,6 +301,8 @@ def assemble_forecast(fine_table: pd.DataFrame, forecast_units: pd.DataFrame, se
 
 CONFIDENCE_HIGH, CONFIDENCE_MEDIUM, CONFIDENCE_LOW = "high", "medium", "low"
 
+
+MATURATION_EXAM_HORIZONS = (1, 3, 6, 12)    # the horizons the maturation curve is examined at (plus the backtest's)
 
 def negative_marks(configuration: Config) -> list:
     """The timevarying marks that lower the rate (structural_timevarying_dims with sign "negative")."""
@@ -333,8 +324,8 @@ def distribute_marks(future: pd.DataFrame, fine_table: pd.DataFrame, configurati
 
     INPUT:   the future rows, already predicted (tasa, uplift, esperado_*), and the fine table (closed months).
     OUTPUT:  the future rows with esperado_* adjusted (the base kept in esperado_unidades_base and
-             esperado_usd_base) and the maduracion_* columns; the table by month. (future, None) when
-             distribute_marks is off or there is no negative mark.
+             esperado_usd_base) and the maduracion_* columns; the future unchanged when distribute_marks is
+             off or there is no negative mark.
     RULES:   the marks are the negative structural_timevarying_dims (softcancel, dormant, not_installed…),
              treated as COMBINATIONS (neutral, dormant, softcancel, dormant+softcancel…): they overlap and every
              combination renews its own way. The extract records the LAST state of a mark, so a mark only
@@ -356,6 +347,12 @@ def distribute_marks(future: pd.DataFrame, fine_table: pd.DataFrame, configurati
              The projected and simulated rows (all neutral) are distributed too: their marks are unknown,
              not absent. No backtest: the technique is the one of the acquisition simulation, the same
              calendar month of the history.
+             A mark with maturation columns (maturation_dims) takes its final share from its MATURATION CURVE
+             instead (maturation.py): V_h + (1 − V_h) × p(h), V_h the share already dated h or more months before
+             due (its columns k ≥ h: not the flag, which also shows the marks of the current month), p(h) the
+             probability that a unit not marked h months before due ends marked (h = the month − the last closed
+             one), learned from the same closed months at the group, its cell or the portfolio; the combinations that carry the mark
+             keep their historical split. Its exam is in step 19 (the honest exam).
     """
     period = configuration.period_col
     units_column, usd_column = configuration.pipeline_units_col, configuration.pipeline_usd_col
@@ -397,6 +394,10 @@ def distribute_marks(future: pd.DataFrame, fine_table: pd.DataFrame, configurati
                                    [[units_column, "_renovadas", usd_column, "_renovado_usd"]].sum()
                                    .apply(tuple, axis=1).to_dict())
     marked_combinations = sorted(set(history["_combinacion"]) - {"neutral"})
+    # the marks whose extract dates them: their final share comes from their maturation curve (maturation.py), learned
+    # from the same closed months; the split among the combinations that carry them stays the historical one
+    curves = {mark: MaturationCurve(history, mark, configuration) for mark in configuration.maturation_dims if mark in marks}
+    last_closed = configuration.calendar_boundaries()["current"] - 1
 
     def combination_rates(keys: dict, combination: str) -> tuple:
         """The units and USD rates of a combination: of the group, its cell or the portfolio (≥ minimum units)."""
@@ -417,6 +418,15 @@ def distribute_marks(future: pd.DataFrame, fine_table: pd.DataFrame, configurati
     today_by_pair = {}
     for (group, month, combination), units in today_units.items():
         today_by_pair.setdefault((group, month), {})[combination] = units / today_total[(group, month)]
+    # what the curve starts from: the units of a mark dated h or more months before due (h = the month − the last
+    # closed one), the same V_h the curve and its exam are built on. The flag of the extract also shows the marks set
+    # during the current month (k = h − 1): counting them as seen AND adding p(h) of the rest would count them twice
+    seen_share_of_mark = {}
+    if curves:
+        months_ahead = rows[period].map(lambda month: (month - last_closed).n).to_numpy(dtype=int)
+        for mark in curves:
+            rows[f"_visto_{mark}"] = visible_units(rows, mark, months_ahead, configuration)
+            seen_share_of_mark[mark] = (rows.groupby(["_grupo", period])[f"_visto_{mark}"].sum() / today_total).to_dict()
 
     # the move of every group and month: the share of its neutral units going to every marked combination
     move_of_pair, moved_by_mark, final_share_of_mark = {}, {}, {}
@@ -429,6 +439,17 @@ def distribute_marks(future: pd.DataFrame, fine_table: pd.DataFrame, configurati
             continue
         final_share = {combination: mix_units[level].get((keys[level], month.month, combination), 0.0) / total
                        for combination in marked_combinations}
+        for mark, curve in curves.items():
+            carrying = [combination for combination in marked_combinations if mark in combination.split("+")]
+            today_of_mark = seen_share_of_mark[mark].get((group, month), 0.0)
+            probability, _ = curve.probability({GROUP_LEVEL: group, CELL_LEVEL: cell_of_group[group]}, (month - last_closed).n)
+            expected_of_mark = today_of_mark + (1.0 - today_of_mark) * probability
+            historical_of_mark = sum(final_share[combination] for combination in carrying)
+            if historical_of_mark > 0:
+                for combination in carrying:
+                    final_share[combination] *= expected_of_mark / historical_of_mark
+            elif mark in final_share:
+                final_share[mark] = expected_of_mark
         final_share_of_mark[(group, month)] = {mark: sum(share for combination, share in final_share.items()
                                                          if mark in combination.split("+")) for mark in marks}
         neutral_today = today.get("neutral", 0.0)
@@ -572,6 +593,48 @@ def show_distribution(table: pd.DataFrame, configuration: Config) -> None:
     doc(f"[{STEP_LABEL}] ══════════ FIN DEL REPARTO DE MARCAS ══════════")
 
 
+def show_maturation_curves(fine_table: pd.DataFrame, configuration: Config) -> None:
+    """The maturation curve of every mark with maturation columns, and its exam on the exam months, on screen.
+
+    INPUT:   the fine table (its closed months: the marks final, dated by their maturation columns).
+    OUTPUT:  nothing returned: per mark, the curve of the portfolio (visible_del_final: the share of the final mark
+             already set k months before due; p_marcarse: the probability that a unit not marked then ends marked)
+             and the exam of the curve (the share of the mark predicted with what was seen h months before, against
+             the final one; the marks seen then alone, for comparison), with a VALORACIÓN line.
+    """
+    marks = [mark for mark in configuration.maturation_dims if mark in fine_table.columns]
+    if not marks:
+        return
+    doc = configuration.logger.doc
+    period = configuration.period_col
+    closed = fine_table[fine_table[CALENDAR_ROLE_COLUMN].isin(TRUTH_ROLES) & (fine_table[configuration.pipeline_units_col] > 0)]
+    history_months = sorted(closed[period].unique())[-configuration.maturation_history_months:]
+    exam_months = sorted(fine_table.loc[fine_table[CALENDAR_ROLE_COLUMN] == ROLE_TEST, period].unique())
+    horizons = sorted(set(configuration.backtest_horizons) | set(MATURATION_EXAM_HORIZONS))
+    doc(f"[{STEP_LABEL}] ══════════ MADURACIÓN DE LAS MARCAS: LA CURVA Y SU EXAMEN ══════════")
+    for mark in marks:
+        curve = MaturationCurve(closed[closed[period].isin(history_months)], mark, configuration)
+        doc(f"[{STEP_LABEL}] {mark}: the curve of the portfolio over {history_months[0]}..{history_months[-1]} "
+            f"(visible_del_final: share of the final {mark} already set k months before due; p_marcarse: probability "
+            f"that a unit not marked k months before due ends marked):")
+        configuration.show_table(curve.portfolio_table().round(4))
+        exam = examine_the_curve(fine_table, mark, exam_months, horizons, configuration)
+        if exam.empty:
+            continue
+        summary = exam.groupby("h")[["cuota_final", "cuota_vista_entonces", "cuota_curva", "error_curva_pp", "error_vista_pp"]].mean()
+        summary["error_curva_abs_pp"] = exam.assign(_abs=exam["error_curva_pp"].abs()).groupby("h")["_abs"].mean()
+        doc(f"[{STEP_LABEL}] {mark}: the exam of the curve in {exam_months[0]}..{exam_months[-1]} (its share of the units due "
+            f"predicted with what was seen h months before, against the final one; cuota_vista_entonces: the marks seen "
+            f"then, with no curve), mean over the exam months:")
+        configuration.show_table(summary.round(4).reset_index())
+        worst = summary["error_curva_abs_pp"].max()
+        seen_gap = summary["error_vista_pp"].abs().max()
+        doc(f"[{STEP_LABEL}] VALORACIÓN {mark}: with the curve the share of {mark} is missed by at most {worst:.2f} pp "
+            f"(mean per horizon); with the marks seen then and no curve, by up to {seen_gap:.2f} pp"
+            + (": the curve is what the forecast needs" if worst < seen_gap else ": the curve does not beat the marks seen; look at it"))
+    doc(f"[{STEP_LABEL}] ══════════ FIN DE LA MADURACIÓN DE LAS MARCAS ══════════")
+
+
 def show_acquisitions(comparison: pd.DataFrame, fine_table: pd.DataFrame, configuration: Config) -> None:
     """The simulated acquisitions against the same months a year before, and the level they took, on screen."""
     if comparison is None or comparison.empty:
@@ -678,13 +741,10 @@ def show_marks_above_final(detector: pd.DataFrame, configuration: Config) -> Non
     doc(f"[{STEP_LABEL}] ══════════ FIN DE MARCAS POR ENCIMA DE SU PROPORCIÓN FINAL ══════════")
 
 
-def timevarying_diagnostic(future: pd.DataFrame, fine_table: pd.DataFrame, configuration: Config) -> None:
-    """On screen only, to decide how the forecast should carry the marks that are not final yet (softcancel,
-    dormant, not_installed): for every future month, each mark today against the same calendar month in the
-    closed history (where the marks are final); what every combination of marks renews in the history; and
-    what the rate of every future month would be with today's mix of marks and with the historical final mix.
-    Every figure is in units due; the rates of the last table are the HISTORICAL rates of each combination,
-    not the forecast's: they measure the size of the effect, not the adjusted forecast."""
+def show_what_every_combination_renews(fine_table: pd.DataFrame, configuration: Config) -> None:
+    """On screen only: what every combination of marks renews in the last closed months (final marks), in units and
+    USD: the cost of a mark against neutral. The marks today against final and the size of the adjustment are in
+    the REPARTO DE MARCAS table (show_distribution)."""
     doc = configuration.logger.doc
     marks = negative_marks(configuration)
     if not marks:
@@ -695,38 +755,6 @@ def timevarying_diagnostic(future: pd.DataFrame, fine_table: pd.DataFrame, confi
     history_months = sorted(closed[period].unique())[-configuration.maturation_history_months:]
     history = closed[closed[period].isin(history_months)].copy()
     history["_combinacion"] = mark_combination(history, marks)
-    history["_mes"] = history[period].map(lambda month: month.month)
-    future_rows = future[future[units_column] > 0].copy()
-    future_rows["_combinacion"] = mark_combination(future_rows, marks)
-    future_rows["_mes"] = future_rows[period].map(lambda month: month.month)
-
-    doc(f"[{STEP_LABEL}] ══════════ MARCAS TIMEVARYING: DIAGNÓSTICO ({', '.join(marks)}) ══════════")
-
-    # A · every mark, month by month: today (future rows) against final (the same calendar month, closed)
-    rows = []
-    for month, block in future_rows.groupby(period):
-        same_month = history[history["_mes"] == month.month]
-        row = {period: month, "meses_vista": int(block["h"].min()),
-               "vencen_usd": round(float(block[usd_column].sum())),
-               "%_del_extracto": round(100 * float(block.loc[block[PIPELINE_ORIGIN_COLUMN] == PIPELINE_REAL, units_column].sum()
-                                                   / block[units_column].sum()), 1)}
-        for mark in marks:
-            today = block[mark].isin(ACTIVE_FLAG_VALUES) if mark in block.columns else pd.Series(False, index=block.index)
-            final = same_month[mark].isin(ACTIVE_FLAG_VALUES)
-            row[f"%{mark}_hoy"] = round(100 * float(block.loc[today, units_column].sum() / block[units_column].sum()), 1)
-            row[f"%{mark}_final"] = (round(100 * float(same_month.loc[final, units_column].sum() / same_month[units_column].sum()), 1)
-                                     if len(same_month) else np.nan)
-        neutral_today = block["_combinacion"] == "neutral"
-        row["%neutro_hoy"] = round(100 * float(block.loc[neutral_today, units_column].sum() / block[units_column].sum()), 1)
-        row["%neutro_final"] = (round(100 * float(same_month.loc[same_month["_combinacion"] == "neutral", units_column].sum()
-                                                  / same_month[units_column].sum()), 1) if len(same_month) else np.nan)
-        rows.append(row)
-    doc(f"[{STEP_LABEL}] A · cada marca, mes a mes: % de las unidades que vencen marcadas HOY (filas futuras: extracto con "
-        f"la foto de hoy, horizonte extendido neutro) frente al % FINAL del mismo mes de calendario en los últimos "
-        f"{len(history_months)} meses cerrados (la marca ya definitiva). %_del_extracto: el resto es proyectada/simulada")
-    configuration.show_table(pd.DataFrame(rows))
-
-    # B · what every combination of marks renews in the history: the cost of a mark
     combinations = (history.groupby("_combinacion")
                     .agg(vencen_unidades=(units_column, "sum"), renovadas=(configuration.renewed_units_col, "sum"),
                          vencen_usd=(usd_column, "sum"), renovado_usd=(configuration.renewed_usd_col, "sum")))
@@ -734,43 +762,10 @@ def timevarying_diagnostic(future: pd.DataFrame, fine_table: pd.DataFrame, confi
     combinations["tasa_unidades"] = (100 * combinations["renovadas"] / combinations["vencen_unidades"]).round(1)
     combinations["tasa_usd"] = (100 * combinations["renovado_usd"] / combinations["vencen_usd"]).round(1)
     combinations = combinations.sort_values("vencen_unidades", ascending=False)
-    doc(f"[{STEP_LABEL}] B · lo que renueva cada combinación de marcas en los últimos {len(history_months)} meses cerrados "
-        f"(marca final): el coste de cada marca frente a neutral")
+    doc(f"[{STEP_LABEL}] ══════════ LO QUE RENUEVA CADA COMBINACIÓN DE MARCAS ({', '.join(marks)}) ══════════")
+    doc(f"[{STEP_LABEL}] the last {len(history_months)} closed months (final marks): the cost of every mark against neutral")
     configuration.show_table(combinations[["%_unidades", "tasa_unidades", "tasa_usd"]].reset_index()
                              .rename(columns={"_combinacion": "combinacion"}))
-
-    # C · the size of the effect: the rate of every future month with today's mix and with the final mix
-    rate_units = (combinations["renovadas"] / combinations["vencen_unidades"]).to_dict()
-    rate_usd = (combinations["renovado_usd"] / combinations["vencen_usd"]).to_dict()
-    neutral_units, neutral_usd = rate_units.get("neutral", np.nan), rate_usd.get("neutral", np.nan)
-    effect_rows = []
-    for month, block in future_rows.groupby(period):
-        same_month = history[history["_mes"] == month.month]
-        today_mix = block.groupby("_combinacion")[units_column].sum() / block[units_column].sum()
-        final_mix = (same_month.groupby("_combinacion")[units_column].sum() / same_month[units_column].sum()
-                     if len(same_month) else today_mix)
-        with_today_units = sum(share * rate_units.get(label, neutral_units) for label, share in today_mix.items())
-        with_final_units = sum(share * rate_units.get(label, neutral_units) for label, share in final_mix.items())
-        with_today_usd = sum(share * rate_usd.get(label, neutral_usd) for label, share in today_mix.items())
-        with_final_usd = sum(share * rate_usd.get(label, neutral_usd) for label, share in final_mix.items())
-        effect_rows.append({period: month, "año": month.year, "vencen_usd": float(block[usd_column].sum()),
-                            "tasa_u_mezcla_hoy": 100 * with_today_units, "tasa_u_mezcla_final": 100 * with_final_units,
-                            "tasa_usd_mezcla_hoy": 100 * with_today_usd, "tasa_usd_mezcla_final": 100 * with_final_usd})
-    effect = pd.DataFrame(effect_rows)
-    effect["dif_pp_usd"] = effect["tasa_usd_mezcla_final"] - effect["tasa_usd_mezcla_hoy"]
-    effect["efecto_usd"] = effect["vencen_usd"] * effect["dif_pp_usd"] / 100
-    doc(f"[{STEP_LABEL}] C · el tamaño del efecto, mes a mes: la tasa con la mezcla de marcas de HOY y con la mezcla FINAL "
-        f"del mismo mes histórico, ambas con las tasas históricas de cada combinación (tabla B). efecto_usd = lo que "
-        f"cambiaría lo renovado del mes si las marcas llegan a su proporción histórica")
-    configuration.show_table(effect.drop(columns=["año"]).round({"vencen_usd": 0, "tasa_u_mezcla_hoy": 1,
-                                                                 "tasa_u_mezcla_final": 1, "tasa_usd_mezcla_hoy": 1,
-                                                                 "tasa_usd_mezcla_final": 1, "dif_pp_usd": 1, "efecto_usd": 0}))
-    by_year = effect.groupby("año")[["vencen_usd", "efecto_usd"]].sum()
-    for year, row in by_year.iterrows():
-        doc(f"[{STEP_LABEL}] VALORACIÓN {year}: si las marcas llegan a su proporción histórica, lo renovado cambia del orden de "
-            f"${row['efecto_usd']:,.0f} sobre ${row['vencen_usd']:,.0f} que vencen ({row['efecto_usd'] / row['vencen_usd']:+.1%} "
-            f"de lo que vence)")
-    doc(f"[{STEP_LABEL}] ══════════ FIN DEL DIAGNÓSTICO DE MARCAS ══════════")
 
 
 def confidence_of_rows(rows: pd.DataFrame, context: dict, configuration: Config) -> np.ndarray:
@@ -1091,9 +1086,9 @@ def pool_predictions(pool_series: pd.DataFrame, backtest: dict, horizons: list, 
         calendar_months = entry["month"]
         for horizon in horizons:
             band_name = band_of_horizon(int(horizon), configuration.horizon_bands)
-            technique = decision.get((composition_id, band_name), configuration.challenger_technique)
+            technique = decision.get((composition_id, band_name), configuration.default_technique)
             technique, rate = predict_composition(history, calendar_months, technique, int(horizon),
-                                                  configuration.challenger_technique)
+                                                  configuration.default_technique)
             rows.append((composition_id, int(horizon), technique, rate))
     return pd.DataFrame(rows, columns=[COMPOSITION_ID_COLUMN, "h", "tecnica", "tasa_pool_h"])
 
@@ -1131,7 +1126,7 @@ def rate_of_rows(future: pd.DataFrame, series_estimate: pd.DataFrame, pool_rates
     future.loc[without_pool & cell_rate.notna(), "tasa"] = cell_rate
     future.loc[future["tasa"].isna(), "origen_tasa"] = RATE_FROM_GLOBAL
     future["tasa"] = future["tasa"].fillna(global_rate)
-    future["tecnica"] = future["tecnica"].fillna(configuration.challenger_technique)
+    future["tecnica"] = future["tecnica"].fillna(configuration.default_technique)
 
     # the band: quantiles of the normalised error × binomial error with the unit's units due (prediction.py)
     unit_units = future[UNIT_ID_COLUMN].map(forecast_units.set_index(UNIT_ID_COLUMN)[configuration.pipeline_units_col])
@@ -1143,7 +1138,8 @@ def rate_of_rows(future: pd.DataFrame, series_estimate: pd.DataFrame, pool_rates
 
 def uplift_of_rows(future: pd.DataFrame, uplift_cells: pd.DataFrame, uplift_verdict: dict, configuration: Config,
                    price_increases: pd.DataFrame = None) -> pd.DataFrame:
-    """Contract where the discount is known and the backtest chose it; statistical otherwise.
+    """Contract where the discount is known and the backtest chose it (on every row with a known discount, or only on
+    the neutral ones: PATH_CONTRACT_NEUTRAL); statistical otherwise.
 
     The statistical uplift of the cell is the one without price increases (step 15); a row whose month is
     still inside the cycle of an increase of its price group takes it again: uplift and band × factor_subida
@@ -1174,9 +1170,14 @@ def uplift_of_rows(future: pd.DataFrame, uplift_cells: pd.DataFrame, uplift_verd
         for uplift_column in ("uplift", "uplift_bajo", "uplift_alto"):
             future[uplift_column] = future[uplift_column] * factor
     discount = configuration.discount_value_column
-    if discount and uplift_verdict.get("via_usada_con_descuento") == PATH_CONTRACT:
+    path_with_discount = uplift_verdict.get("via_usada_con_descuento")
+    if discount and path_with_discount in (PATH_CONTRACT, PATH_CONTRACT_NEUTRAL):
         known = future[discount].notna()
-        contract = 1 / (1 - future[discount].clip(upper=configuration.contract_discount_cap))
+        if path_with_discount == PATH_CONTRACT_NEUTRAL:
+            # only the neutral rows of today: the units that will still take a mark leave them in the distribution
+            # of the marks (action 7), at the USD rate of their combination
+            known &= has_no_negative_mark(future, configuration)
+        contract = contract_rule(future[discount], configuration)
         future.loc[known, "uplift"] = contract
         future.loc[known, "uplift_bajo"] = contract
         future.loc[known, "uplift_alto"] = contract
@@ -1227,7 +1228,7 @@ def totals(future: pd.DataFrame, fine_table: pd.DataFrame, configuration: Config
     return by_month, by_year
 
 
-def check_forecast(future: pd.DataFrame, all_future: pd.DataFrame, fine_table: pd.DataFrame, by_month: pd.DataFrame,
+def check_forecast(future: pd.DataFrame, fine_table: pd.DataFrame, by_month: pd.DataFrame,
                    configuration: Config, check_log: list) -> None:
     """Checks 1 to 5."""
     missing = future[["tasa", "uplift", "esperado_usd"]].isna().any(axis=1)
@@ -1241,14 +1242,14 @@ def check_forecast(future: pd.DataFrame, all_future: pd.DataFrame, fine_table: p
                             examples=future.loc[bad_band, ["tasa", "tasa_baja", "tasa_alta"]])
     future_roles = fine_table[CALENDAR_ROLE_COLUMN] == ROLE_PROJECTION
     configuration.log_check(STEP_LABEL, check_log, "no closed row is forecast; every future row of the extract is",
-                            set(all_future.loc[all_future[PIPELINE_ORIGIN_COLUMN] == PIPELINE_REAL, "_fila"])
+                            set(future.loc[future[PIPELINE_ORIGIN_COLUMN] == PIPELINE_REAL, "_fila"])
                             == set(fine_table.index[future_roles]),
                             failure_detail="the forecast rows are not the future rows")
-    real_rows = all_future[PIPELINE_ORIGIN_COLUMN] == PIPELINE_REAL
-    due_difference = all_future.loc[real_rows, configuration.pipeline_usd_col].sum() - fine_table.loc[future_roles, configuration.pipeline_usd_col].sum()
+    real_rows = future[PIPELINE_ORIGIN_COLUMN] == PIPELINE_REAL
+    due_difference = future.loc[real_rows, configuration.pipeline_usd_col].sum() - fine_table.loc[future_roles, configuration.pipeline_usd_col].sum()
     configuration.log_check(STEP_LABEL, check_log, "the pipeline of the extract's future rows is conserved (Σ USD due)",
                             abs(due_difference) <= configuration.money_tolerance, failure_detail=f"difference ${due_difference:,.2f}",
-                            context=f"${all_future.loc[real_rows, configuration.pipeline_usd_col].sum():,.0f} due in the extract")
+                            context=f"${future.loc[real_rows, configuration.pipeline_usd_col].sum():,.0f} due in the extract")
     total_difference = by_month["esperado_usd"].sum() - future["esperado_usd"].sum()
     configuration.log_check(STEP_LABEL, check_log, "the totals are the sum of the rows", abs(total_difference) <= configuration.money_tolerance,
                             failure_detail=f"difference ${total_difference:,.2f}", context=f"${future['esperado_usd'].sum():,.0f} expected")

@@ -20,39 +20,32 @@ go (a *_level_N only once its *_level_(N+1) has gone), the one that loses the le
 given the ones that remain. That sequential loss is the question the ladder asks at each
 rung (the unique contribution is not: in a nested hierarchy every coarser level has
 unique ≈ 0 while the finer one is there).
-For every pair of dimensions: the η² of the pair and its interaction (η² of the pair −
-the larger η² of the two): pairs that separate more together than apart.
 
 Actions (logged as they are done):
   1. the base: the series whose own rate is informative, with their dimension values
   2. η², unique contribution and ω² of every dimension
   3. the collapse order of the mandatory dimensions
-  4. the pairs of dimensions and their interaction
-  5. check the figures and the order                                 checks 1-4
-  6. write the two decision tables                                   checks 5-6
-  7. count the checks; stop if any failed
-  8. show the dimensions in collapse order and the top pairs, as tables
+  4. check the figures and the order                                 checks 1-4
+  5. write the decision table                                        check 5
+  6. count the checks; stop if any failed
+  7. show the dimensions in collapse order, as a table
 
 Checks (logged as they are made, numbered, at the level of their status):
    1. the base has at least 3 series (else every figure is 0)       (warning only)
    2. every figure is between 0 and 1
-   3. every mandatory dimension with variation has one collapse position, 1 to K (one without variation: 0, no pass)
+   3. every mandatory dimension with variation has one collapse position, 1 to K (one without variation: 0, it collapses last and its pass changes no group)
    4. a *_level_N never collapses before its *_level_(N+1)
-   5-6. tables sff_decision_eta2 and sff_decision_eta2_pares written and read back
+   5. table sff_decision_eta2 written and read back
 
-Output: (the decision per dimension, the top pairs) · tables sff_decision_eta2,
-sff_decision_eta2_pares. The ladder (step 10) reads the collapse order.
+Output: the decision per dimension · table sff_decision_eta2. The ladder (step 10) reads the collapse order.
 """
 
 # ─── imports ─────────────────────────────────────────────────────────────────────
-import itertools
-
 import numpy as np
 import pandas as pd
 
 from config import Config
-from vocabulario import (ROUTE_COLUMN, ROUTE_PREDICTABLE, SERIES_ID_COLUMN, SIGN_COLUMN, SIGN_NEUTRAL,
-                         TABLE_DIMENSION_PAIRS, TABLE_DIMENSIONS)
+from vocabulario import ROUTE_COLUMN, ROUTE_PREDICTABLE, SERIES_ID_COLUMN, SIGN_COLUMN, SIGN_NEUTRAL, TABLE_DIMENSIONS
 
 
 # ─── the step ────────────────────────────────────────────────────────────────────
@@ -64,13 +57,12 @@ STEP_PURPOSE = ("measure how much every dimension separates the renewal rate (η
 STEP_ACTIONS = ["the base: the series whose own rate is informative, with their dimension values",
                 "η², unique contribution and ω² of every dimension",
                 "the collapse order of the mandatory dimensions",
-                "the pairs of dimensions and their interaction",
                 "check the figures and the order (checks 1-4)",
-                "write the two decision tables (checks 5-6)",
+                "write the decision table (check 5)",
                 "count the checks; stop if any failed",
-                "show the dimensions in collapse order and the top pairs, as tables"]
-STEP_OUTPUT = ("one row per dimension (η², unique contribution, ω², collapse order, sequential loss) · the top pairs · "
-               "tables sff_decision_eta2, sff_decision_eta2_pares")
+                "show the dimensions in collapse order, as a table"]
+STEP_OUTPUT = ("one row per dimension (η², unique contribution, ω², collapse order, sequential loss) · "
+               "table sff_decision_eta2")
 
 # ─── named constants ─────────────────────────────────────────────────────────────
 VALUE_COLUMN = "tasa_propia"
@@ -172,8 +164,9 @@ def sequential_collapse_order(base: pd.DataFrame, mandatory_dims: list, configur
 # THE STEP
 # ═══════════════════════════════════════════════════════════════════════════════════
 
-def analyse_dimensions(series_rate: pd.DataFrame, series_lookup: pd.DataFrame, configuration: Config) -> tuple:
-    """η², unique contribution, ω² and the collapse order; checked and written."""
+def analyse_dimensions(series_rate: pd.DataFrame, series_table: pd.DataFrame, configuration: Config) -> pd.DataFrame:
+    """η², unique contribution, ω² and the collapse order; checked and written. series_table (step 06) gives the
+    dimension values of every series."""
     configuration.log_step_start(STEP_LABEL, STEP_NAME, STEP_PURPOSE, STEP_ACTIONS, STEP_OUTPUT)
     check_log = []
     mandatory_dims = configuration.business_mandatory_dims
@@ -182,7 +175,7 @@ def analyse_dimensions(series_rate: pd.DataFrame, series_lookup: pd.DataFrame, c
     # [1] the base: series with an informative own rate, and their dimension values
     base = series_rate[(series_rate[ROUTE_COLUMN] == ROUTE_PREDICTABLE) & series_rate[VALUE_COLUMN].notna()
                        & (series_rate[SIGN_COLUMN] == SIGN_NEUTRAL) & (series_rate[WEIGHT_COLUMN] > 0)]
-    base = base.merge(series_lookup[[SERIES_ID_COLUMN] + dimensions], on=SERIES_ID_COLUMN)
+    base = base.merge(series_table[[SERIES_ID_COLUMN] + dimensions], on=SERIES_ID_COLUMN)
     predictable_usd = series_rate.loc[series_rate[ROUTE_COLUMN] == ROUTE_PREDICTABLE, "usd_por_predecir"].sum()
     configuration.log_action(STEP_LABEL, 1, f"base: {len(base):,} series (predecible, own rate, neutro), "
                                             f"{base['usd_por_predecir'].sum() / predictable_usd if predictable_usd else 0:.0%} "
@@ -208,10 +201,10 @@ def analyse_dimensions(series_rate: pd.DataFrame, series_lookup: pd.DataFrame, c
 
     # [3] the collapse order of the mandatory dimensions
     # a dimension with a single value (e.g. a generated level that ended in one group) has nothing to
-    # collapse: it is not a pass of the ladder
+    # collapse: step 10 puts it last, where its pass merges nothing
     without_variation = [dimension for dimension in mandatory_dims if base[dimension].nunique() <= 1]
     if without_variation:
-        configuration.log_action(STEP_LABEL, 3, f"no variation, not a pass of the ladder: {without_variation}")
+        configuration.log_action(STEP_LABEL, 3, f"no variation, collapsed last by step 10 (its pass merges nothing): {without_variation}")
     collapse_order = sequential_collapse_order(base, [dimension for dimension in mandatory_dims if dimension not in without_variation],
                                                configuration)
     position_of = {dimension: position for position, (dimension, _) in enumerate(collapse_order, 1)}
@@ -220,54 +213,24 @@ def analyse_dimensions(series_rate: pd.DataFrame, series_lookup: pd.DataFrame, c
     decision["perdida_secuencial"] = decision["dimension"].map(loss_of)
     configuration.log_action(STEP_LABEL, 3, "collapse order: " + " → ".join(dimension for dimension, _ in collapse_order))
 
-    # [4] the pairs and their interaction
-    pairs = dimension_pairs(base, decision, dimensions, has_evidence, configuration)
-    configuration.log_action(STEP_LABEL, 4, f"{len(list(itertools.combinations(dimensions, 2)))} pairs measured; "
-                                            f"the top {len(pairs)} by interaction are kept")
-
-    # [5] the checks
-    configuration.log_action(STEP_LABEL, 5, "checking the figures and the order")
+    # [4] the checks
+    configuration.log_action(STEP_LABEL, 4, "checking the figures and the order")
     check_dimensions(base, decision, collapse_order, configuration, check_log)
 
-    # [6] the two tables, written
-    configuration.log_action(STEP_LABEL, 6, "writing the two decision tables")
+    # [5] the decision table, written
+    configuration.log_action(STEP_LABEL, 5, "writing the decision table")
     configuration.write_table(STEP_LABEL, check_log, decision, TABLE_DIMENSIONS)
-    configuration.write_table(STEP_LABEL, check_log, pairs, TABLE_DIMENSION_PAIRS)
 
-    # [7] the count of the checks; stop if anything failed
-    configuration.log_action(STEP_LABEL, 7, "counting the checks")
+    # [6] the count of the checks; stop if anything failed
+    configuration.log_action(STEP_LABEL, 6, "counting the checks")
     configuration.log_check_summary(STEP_LABEL, STEP_NAME, check_log)
 
-    # [8] the dimensions in collapse order, and the top pairs
-    configuration.log_action(STEP_LABEL, 8, "the dimensions (mandatory in collapse order: 1 goes first; extras are "
+    # [7] the dimensions in collapse order
+    configuration.log_action(STEP_LABEL, 7, "the dimensions (mandatory in collapse order: 1 goes first; extras are "
                                             "annulled before any mandatory):")
     shown = decision.assign(_order=decision["orden_colapso"].where(decision["orden_colapso"] > 0, 0))
     configuration.show_table(shown.sort_values(["anulable", "_order"], ascending=[False, True]).drop(columns="_order"))
-    if len(pairs):
-        configuration.logger.doc(f"[{STEP_LABEL}] the pairs that separate more together than apart:")
-        configuration.show_table(pairs.head(10))
-    return decision, pairs
-
-
-def dimension_pairs(base: pd.DataFrame, decision: pd.DataFrame, dimensions: list, has_evidence: bool,
-                    configuration: Config) -> pd.DataFrame:
-    """η² of every pair of dimensions and its interaction (η² of the pair − the larger of the
-    two individual η²); the top ones by interaction."""
-    pair_columns = ["par", "eta2_par", "interaccion"]
-    if not has_evidence:
-        return pd.DataFrame(columns=pair_columns)
-    individual = decision.set_index("dimension")["eta2_individual"]
-    pair_rows = []
-    for first_dimension, second_dimension in itertools.combinations(dimensions, 2):
-        joint = base.assign(_pair=base[first_dimension].astype(str) + "|" + base[second_dimension].astype(str))
-        pair_eta2 = weighted_eta2(joint, "_pair")
-        pair_rows.append({"par": f"{first_dimension}×{second_dimension}",
-                          "eta2_par": round(pair_eta2, configuration.dimension_figure_decimals),
-                          "interaccion": round(pair_eta2 - max(individual[first_dimension], individual[second_dimension]),
-                                               configuration.dimension_figure_decimals)})
-    pairs = pd.DataFrame(pair_rows, columns=pair_columns)
-    return (pairs.sort_values("interaccion", ascending=False).head(configuration.dimension_pairs_shown)
-            .reset_index(drop=True))
+    return decision
 
 
 def check_dimensions(base: pd.DataFrame, decision: pd.DataFrame, collapse_order: list, configuration: Config,
@@ -276,7 +239,7 @@ def check_dimensions(base: pd.DataFrame, decision: pd.DataFrame, collapse_order:
     # [1] enough series to measure anything
     configuration.log_check(STEP_LABEL, check_log, f"the base has at least {configuration.dimension_min_series} series",
                             len(base) >= configuration.dimension_min_series,
-                            failure_detail=f"only {len(base)} series: every figure is 0 and the collapse order is by name",
+                            failure_detail=f"only {len(base)} series: every figure is 0 and the collapse order is the declared one",
                             context=f"{len(base):,} series", blocking=False)
 
     # [2] the figures are proportions
@@ -286,7 +249,7 @@ def check_dimensions(base: pd.DataFrame, decision: pd.DataFrame, collapse_order:
                             failure_detail=f"{len(out_of_range)} dimensions with a figure outside [0, 1]",
                             examples=out_of_range)
 
-    # [3] one position per mandatory dimension with variation, 1 to K; the ones without variation: 0 (no pass)
+    # [3] one position per mandatory dimension with variation, 1 to K; the ones without variation: 0 (collapsed last)
     mandatory_dims = configuration.business_mandatory_dims
     positions = sorted(position for position in decision.loc[decision["grupo"] == "mandatory", "orden_colapso"] if position > 0)
     without_variation = int((decision.loc[decision["grupo"] == "mandatory", "orden_colapso"] == 0).sum())

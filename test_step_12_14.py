@@ -1,6 +1,6 @@
 """
 test_step_12_14.py — Steps 12 and 14 on the synthetic: the pool series sum every matching
-series; the backtest never peeks, chooses against the challenger, measures in the exam.
+series; the backtest never peeks, chooses against the default technique, measures in the exam.
 
     python test_step_12_14.py
 """
@@ -52,7 +52,7 @@ def test_pool_series_and_backtest() -> None:
     history = units[(units["fs_id"] == "EU|A|0|0|0|0|web") & units["tasa"].notna()]
     check(own["renovadas"].sum() == history["total_renewed_units"].sum(),
           "the series of a rung-0 id is the series itself, month by month")
-    check("5 checks: 5 ok" in console.split("STEP 12")[1] and "11 checks: 11 ok" in console.split("STEP 14")[1],
+    check("5 checks: 5 ok" in console.split("STEP 12")[1] and "10 checks: 10 ok" in console.split("STEP 14")[1],
           "the checks of both steps pass")
 
     backtest = results["backtest"]
@@ -66,15 +66,15 @@ def test_pool_series_and_backtest() -> None:
     decision = backtest["decision"]
     unjudged = pool_reference.loc[pool_reference["gate"] == "soporte", "composition_id"]
     check((decision[decision["composition_id"].isin(unjudged)]["tecnica_origen"] == "sin_soporte").all(),
-          "an id below the floor is not judged: it takes the challenger")
+          "an id below the floor is not judged: it takes the default technique")
     champions = decision[decision["tecnica_origen"] == "campeon"]
     exam_rows = predictions[predictions["proposito"] == "seleccion"]
     one = champions.iloc[0]
     scores = (exam_rows[(exam_rows["composition_id"] == one["composition_id"]) & (exam_rows["tramo_h"] == one["tramo_h"])]
               .assign(abs_norm=lambda frame: frame["err_norm"].abs()).groupby("tecnica")["abs_norm"].mean())
-    margin = configuration.challenger_margin_by_band[one["tramo_h"]]
+    margin = configuration.default_margin_by_band[one["tramo_h"]]
     check(scores[one["tecnica"]] == scores.min() and scores[one["tecnica"]] < scores["T3_ma3"] - margin,
-          "a champion has the lowest error of its id and band and beats the challenger by the margin")
+          "a champion has the lowest error of its id and band and beats the default technique by the margin")
     total = backtest["exam_total"]
     check(len(total) == 3 * len(configuration.backtest_horizons) and total["elegida_error_pct"].abs().max() < 0.2,
           "the exam of the total: one row per exam month and horizon")

@@ -65,7 +65,7 @@ def test_the_step() -> None:
     results = {}
     console = console_of(lambda: results.update(run(configuration)))
     check("every time_series row has every region level" in console.split("STEP 01 ·")[1].split("STEP 02 ")[0]
-          and "6 checks: 6 ok" in console.split("STEP 20")[1],
+          and "5 checks: 5 ok" in console.split("STEP 20")[1],
           "the separation (step 01) and the checks of step 20 pass")
     time_series_rows = results["time_series_rows"]
     check(len(time_series_rows) == 48 and not (results["fine_table"]["flag_time_series"] == 1).any(),

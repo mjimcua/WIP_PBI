@@ -10,7 +10,7 @@ import pandas as pd
 
 from step_06_series_routes import build_series_routes, route_from_coverage
 from test_helpers import check, console_of, count_status, finish
-from test_step_05 import units_synthetic
+from test_step_04 import units_synthetic
 
 
 def run_step(units, configuration):
@@ -38,24 +38,10 @@ def test_the_routes() -> None:
     check((series["meses_entrenamiento"] + series["meses_examen"] + series["meses_proyeccion"] == series["meses"]).all(), "the months per role add up to the months of the series")
     check(abs(series["usd_por_predecir"].sum() - units.loc[units["rol"] == "proyeccion", "total_tr_usd"].sum()) < 0.01,
           "the USD to predict is what falls due in the projection")
-    check(count_status(console, "ok") == 4 and "4 checks: 4 ok" in console, "the 4 checks pass and are logged")
-    written = pd.read_sql("SELECT COUNT(*) AS n FROM sff_series", configuration.sql_engine)["n"].item()
-    check(written == 17, "sff_series written")
-
-
-def test_a_mixed_universe_warns() -> None:
-    print("B · a series in two universes is a warning, labelled mixto")
-    _, units, configuration = units_synthetic()
-    mixed = units.copy()
-    first_series = mixed["fs_id"].iloc[0]
-    mixed.loc[mixed.index[mixed["fs_id"] == first_series][0], "flag_time_series"] = 1
-    series, console = run_step(mixed, configuration)
-    check(series.loc[series["fs_id"] == first_series, "universo"].item() == "mixto"
-          and "WARN  flag_time_series is the same in every unit of a series" in console,
-          "the series is labelled mixto and the check warns")
+    check(count_status(console, "ok") == 2 and "2 checks: 2 ok" in console, "the 2 checks pass and are logged")
+    check("universo" not in series.columns, "no universe column: the time_series rows were separated in step 01")
 
 
 if __name__ == "__main__":
     test_the_routes()
-    test_a_mixed_universe_warns()
     finish()

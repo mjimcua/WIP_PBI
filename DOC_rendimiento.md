@@ -66,7 +66,7 @@ rendimiento, aunque en el sintético no se note.
    `python table_equivalence.py compare antes.pkl despues.pkl`. Tienen que salir **n tablas idénticas de
    n**, bit a bit. Si no, el cambio se descarta; no se ajusta una tolerancia.
 3. Si el cambio toca una rama que el sintético no recorre (en el sintético todas las técnicas tienen banda
-   propia, así que nunca se usa el fallback al retador ni ±z), esa rama lleva un test directo
+   propia, así que nunca se usa el fallback a la técnica por defecto ni ±z), esa rama lleva un test directo
    (`test_prediction.py`, parte C).
 4. La suite completa en verde.
 5. Para medir: los logs tienen marca de tiempo por acción. El salto entre dos acciones dice dónde está el

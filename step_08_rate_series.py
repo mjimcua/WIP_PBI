@@ -6,7 +6,7 @@ anything later, this step leaves three things ready:
   · GAPS: a month with no unit INSIDE the history of a series (between its first and
     last closed month) gets a gap row, marked sintetica = 1, with nothing due. A month
     with no expirations says nothing about the rate: its rate is null, never 0 %.
-    Only series that will be estimated get gaps (route predecible, universe normal).
+    Only series that will be estimated get gaps (route predecible).
   · THE RATE OF EVERY UNIT: renewed / due units, only in closed truth months
     (entrenamiento, examen) of real units with something due. Everywhere else it is
     null: no information, never 0 %.
@@ -24,30 +24,27 @@ Actions (logged as they are done):
   4. the summary of every series: support, own rate, binomial error
   5. the sign of every series
   6. check the gaps, the rates and the summary                      checks 1-4
-  7. write the gap rows and the series summary                      checks 5-6
-  8. count the checks; stop if any failed
-  9. show the series by support and the largest ones, as tables
+  7. count the checks; stop if any failed
+  8. show the series by support and the largest ones, as tables
 
 Checks (logged as they are made, numbered, at the level of their status):
    1. gap rows only inside the history of estimable series, never repeating a unit
    2. a rate only in real closed months with something due
    3. every rate between 0 and 1                                    (warning only)
    4. every series has its summary row
-   5-6. tables sff_fu_huecos and sff_series_tasa written and read back
 
-Output: (the forecast units with the gap rows and the columns tasa and sintetica,
-the series summary) · tables sff_fu_huecos, sff_series_tasa.
+Output: (the forecast units with the gap rows and the columns tasa and sintetica, the series summary),
+in memory: the gap rows reach sff_nucleo (step NU) and the summary the forecast series dimension.
 """
 
 # ─── imports ─────────────────────────────────────────────────────────────────────
 import numpy as np
 import pandas as pd
 
-from config import ACTIVE_FLAG_VALUES, ID_FIELD_SEPARATOR, Config, hash_key
+from config import ACTIVE_FLAG_VALUES, ID_FIELD_SEPARATOR, Config
 from vocabulario import (CALENDAR_ROLE_COLUMN, CURRENT_MONTH_COLUMN, FINE_ROWS_COLUMN, RATE_COLUMN, ROUTE_COLUMN,
-                         ROUTE_PREDICTABLE, SERIES_ID_COLUMN, SERIES_KEY_COLUMN, SIGN_COLUMN, SIGN_MIXED,
-                         SIGN_NEGATIVE, SIGN_NEUTRAL, SIGN_POSITIVE, SYNTHETIC_COLUMN, TABLE_GAPS, TABLE_SERIES_RATE,
-                         TRUTH_ROLES, UNIT_ID_COLUMN, UNIT_KEY_COLUMN, UNIVERSE_COLUMN, UNIVERSE_NORMAL)
+                         ROUTE_PREDICTABLE, SERIES_ID_COLUMN, SIGN_COLUMN, SIGN_MIXED, SIGN_NEGATIVE, SIGN_NEUTRAL,
+                         SIGN_POSITIVE, SYNTHETIC_COLUMN, TRUTH_ROLES, UNIT_ID_COLUMN)
 
 
 # ─── the step ────────────────────────────────────────────────────────────────────
@@ -62,11 +59,10 @@ STEP_ACTIONS = ["find the series that get gaps and their history span",
                 "the summary of every series: support, own rate, binomial error",
                 "the sign of every series",
                 "check the gaps, the rates and the summary (checks 1-4)",
-                "write the gap rows and the series summary (checks 5-6)",
                 "count the checks; stop if any failed",
                 "show the series by support and the largest ones, as tables"]
 STEP_OUTPUT = ("the forecast units with gap rows and the rate of every unit · one row per series with its support, "
-               "own rate, error and sign · tables sff_fu_huecos, sff_series_tasa")
+               "own rate, error and sign (in memory)")
 
 # ─── named constants ─────────────────────────────────────────────────────────────
 PERCENTAGE_POINTS = 100
@@ -89,16 +85,15 @@ def wilson_half_width_pp(rates: np.ndarray, supports: np.ndarray, z: float) -> n
 
 
 def build_rate_series(forecast_units: pd.DataFrame, series_table: pd.DataFrame, configuration: Config) -> tuple:
-    """Gaps, the rate of every unit and the summary of every series; checked and written."""
+    """Gaps, the rate of every unit and the summary of every series; checked."""
     configuration.log_step_start(STEP_LABEL, STEP_NAME, STEP_PURPOSE, STEP_ACTIONS, STEP_OUTPUT)
     check_log = []
 
-    # [1] the series that get gaps: estimated ones, of the normal universe; their closed span
-    estimable_series = series_table.loc[(series_table[ROUTE_COLUMN] == ROUTE_PREDICTABLE)
-                                        & (series_table[UNIVERSE_COLUMN] == UNIVERSE_NORMAL), SERIES_ID_COLUMN]
+    # [1] the series that get gaps: the estimated ones; their closed span
+    estimable_series = series_table.loc[series_table[ROUTE_COLUMN] == ROUTE_PREDICTABLE, SERIES_ID_COLUMN]
     truth_units = forecast_units[forecast_units[SERIES_ID_COLUMN].isin(set(estimable_series))
                                  & forecast_units[CALENDAR_ROLE_COLUMN].isin(TRUTH_ROLES)]
-    configuration.log_action(STEP_LABEL, 1, f"{len(estimable_series):,} estimable series (predecible, normal) with "
+    configuration.log_action(STEP_LABEL, 1, f"{len(estimable_series):,} estimable series (predecible) with "
                                             f"{len(truth_units):,} units in closed months")
 
     # [2] the gap rows
@@ -138,21 +133,11 @@ def build_rate_series(forecast_units: pd.DataFrame, series_table: pd.DataFrame, 
     configuration.log_action(STEP_LABEL, 6, "checking the gaps, the rates and the summary")
     check_rate_series(rated_units, gap_rows, truth_units, series_rate, series_table, configuration, check_log)
 
-    # [7] the tables, written
-    configuration.log_action(STEP_LABEL, 7, "writing the gap rows and the series summary")
-    gap_table = (gap_rows[[UNIT_ID_COLUMN, UNIT_KEY_COLUMN, SERIES_ID_COLUMN, SERIES_KEY_COLUMN,
-                           configuration.period_col, CALENDAR_ROLE_COLUMN]]
-                 if len(gap_rows) else pd.DataFrame(columns=[UNIT_ID_COLUMN, UNIT_KEY_COLUMN, SERIES_ID_COLUMN,
-                                                             SERIES_KEY_COLUMN, configuration.period_col,
-                                                             CALENDAR_ROLE_COLUMN]))
-    configuration.write_table(STEP_LABEL, check_log, gap_table, TABLE_GAPS)
-    configuration.write_table(STEP_LABEL, check_log, series_rate, TABLE_SERIES_RATE)
-
-    # [8] the count of the checks; stop if anything failed
-    configuration.log_action(STEP_LABEL, 8, "counting the checks")
+    # [7] the count of the checks; stop if anything failed
+    configuration.log_action(STEP_LABEL, 7, "counting the checks")
     configuration.log_check_summary(STEP_LABEL, STEP_NAME, check_log)
 
-    # [9] the series by support, and the largest ones
+    # [8] the series by support, and the largest ones
     log_rate_series_report(series_rate, configuration)
     return rated_units, series_rate
 
@@ -160,7 +145,7 @@ def build_rate_series(forecast_units: pd.DataFrame, series_table: pd.DataFrame, 
 def build_gap_rows(truth_units: pd.DataFrame, configuration: Config) -> pd.DataFrame:
     """One row per month missing between the first and the last closed month of a series.
     The row copies the description of the series, has nothing due, and takes the role of
-    the previous real month. Built as one frame (months × series minus the existing), not
+    its month in the calendar. Built as one frame (months × series minus the existing), not
     row by row: with thousands of series the row-by-row version takes seconds per step."""
     period_column = configuration.period_col
     if truth_units.empty:
@@ -187,24 +172,16 @@ def build_gap_rows(truth_units: pd.DataFrame, configuration: Config) -> pd.DataF
     gap_rows[FINE_ROWS_COLUMN] = 0
     gap_rows[SYNTHETIC_COLUMN] = 1
     gap_rows[UNIT_ID_COLUMN] = gap_rows[SERIES_ID_COLUMN] + ID_FIELD_SEPARATOR + gap_rows[period_column].astype(str)
-    gap_rows[UNIT_KEY_COLUMN] = gap_rows[UNIT_ID_COLUMN].map(hash_key)
 
-    # [3] the role of the previous real month of the same series
-    role_by_month = truth_units[[SERIES_ID_COLUMN, period_column, CALENDAR_ROLE_COLUMN]].copy()
-    role_by_month["_month_number"] = role_by_month[period_column].map(lambda month: month.ordinal)
-    gap_rows["_month_number"] = gap_rows[period_column].map(lambda month: month.ordinal)
-    gap_rows = pd.merge_asof(gap_rows.drop(columns=[CALENDAR_ROLE_COLUMN]).sort_values("_month_number"),
-                             role_by_month.drop(columns=[period_column]).sort_values("_month_number"),
-                             on="_month_number", by=SERIES_ID_COLUMN, direction="backward")
-    return gap_rows.drop(columns="_month_number")
+    # [3] the role of its month in the calendar (a gap of an exam month is examen, not the role of the previous month)
+    gap_rows[CALENDAR_ROLE_COLUMN] = configuration.role_of_months(gap_rows[period_column])
+    return gap_rows
 
 
 def summarise_series(rated_units: pd.DataFrame, series_table: pd.DataFrame, configuration: Config) -> pd.DataFrame:
     """One row per series of the series table: support, history, own rate, binomial error."""
-    labels = series_table[[SERIES_ID_COLUMN, SERIES_KEY_COLUMN, ROUTE_COLUMN, UNIVERSE_COLUMN, "usd_por_predecir"]]
-    normal_series = set(series_table.loc[series_table[UNIVERSE_COLUMN] == UNIVERSE_NORMAL, SERIES_ID_COLUMN])
-    history = rated_units[rated_units[SERIES_ID_COLUMN].isin(normal_series)
-                          & rated_units[CALENDAR_ROLE_COLUMN].isin(TRUTH_ROLES)]
+    labels = series_table[[SERIES_ID_COLUMN, ROUTE_COLUMN, "usd_por_predecir"]]
+    history = rated_units[rated_units[CALENDAR_ROLE_COLUMN].isin(TRUTH_ROLES)]
     real_months_with_pipeline = history[(history[SYNTHETIC_COLUMN] == 0)
                                         & (history[configuration.pipeline_units_col] > 0)]
 
@@ -285,11 +262,11 @@ def check_rate_series(rated_units: pd.DataFrame, gap_rows: pd.DataFrame, truth_u
 
 
 def log_rate_series_report(series_rate: pd.DataFrame, configuration: Config) -> None:
-    """Action 9: series and money to predict by support, and the largest series."""
-    configuration.log_action(STEP_LABEL, 9, f"series by support (n_propio: units due in a typical closed month; "
+    """Action 8: series and money to predict by support, and the largest series."""
+    configuration.log_action(STEP_LABEL, 8, f"series by support (n_propio: units due in a typical closed month; "
                                             f"the floor is {configuration.support_floor:.0f}):")
     with_history = series_rate["meses_historia"] > 0
-    groups = {"sin historia propia (solo_futuro o serie_temporal)": ~with_history,
+    groups = {"sin historia propia (solo_futuro)": ~with_history,
               f"bajo el suelo (< {configuration.support_floor:.0f})": with_history & (series_rate["bajo_suelo"] == 1),
               f"sobre el suelo (≥ {configuration.support_floor:.0f})": with_history & (series_rate["bajo_suelo"] == 0)}
     total_usd = series_rate["usd_por_predecir"].sum()

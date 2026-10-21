@@ -44,12 +44,13 @@ the support floor; their monthly rate carries at least the binomial noise of a s
 series that will use the merge: merging them adds less bias than the noise it removes. With p = 0.64 and
 a floor of 30, the threshold is 8.8 pp. level_merge_max_pp fixes another value (5 pp = the noise of a
 series of about 90 contracts a month). A dimension that ends in a single group does not separate the
-renewal rate: its level_1 is constant and the ladder gives it no pass (step 09).
+renewal rate: its level_1 is constant and its pass of the ladder merges nothing (step 09).
 
 THE JSON: the first run writes the groups to levels_path; every later run that finds the file USES it, so
 the ids of the forecast series do not move from one month to the next. A dimension missing from the file
-(or with another type or another merge threshold) is generated and added. To regenerate everything, delete
-the file. A value the file does not know goes to the residual group, with a warning.
+(or with another type, another merge threshold or another support floor) is generated and added; and every
+dimension is generated again when the file was trained for a LATER current month (a run of an earlier month
+must not see its exam and its future through the groups). To regenerate everything, delete the file. A value the file does not know goes to the residual group, with a warning.
 
 Actions (logged as they are done):
    1. check the time_series flag and separate the two universes
@@ -62,7 +63,7 @@ Actions (logged as they are done):
    8. generate the groups of every dimension that needs them (training months)
    9. fill <column>_level_1
   10. check the values the file knows
-  11. write the levels tables
+  11. the levels as tables (on screen in action 14)
   12. count the checks; stop if any failed
   13. report the money of the closed months
   14. show the criterion, the groups (rate per year), the values and the merge decisions, and the
@@ -86,7 +87,6 @@ Checks (logged as they are made, numbered in order, at the level of their status
                                  no row falls due with units but USD = 0
                                  no row repeated in every column (a double load)
   levels (if declared)           no value of the extract is unknown to the file           (warning only)
-                                 tables sff_dimension_levels and sff_dimension_level_values written
 
 Output: (the raw of the renewal universe with <column>_level_1 for every leveled column, the time_series
 rows). Without leveled_dims the renewal raw comes back with its rows and columns unchanged.
@@ -103,7 +103,7 @@ import pandas as pd
 
 from config import (ACTIVE_FLAG_VALUES, GENERATED_LEVEL_SUFFIX, ISOLATED_RATIO_BANDS, STATUS_FAILED, Config,
                     join_columns, region_columns_of, roles_overview)
-from vocabulario import ROLE_TRAIN, TABLE_DIMENSION_LEVEL_VALUES, TABLE_DIMENSION_LEVELS
+from vocabulario import ROLE_TRAIN
 
 
 # ─── the step ────────────────────────────────────────────────────────────────────
@@ -125,13 +125,12 @@ STEP_ACTIONS = ["check the time_series flag and separate the two universes",
                 "generate the groups of every dimension that needs them (training months)",
                 "fill <column>_level_1",
                 "check the values the file knows",
-                "write the levels tables",
+                "the levels as tables (on screen in action 14)",
                 "count the checks; stop if any failed",
                 "report the money of the closed months",
                 "show the criterion, the groups (rate per year), the values and the merge decisions, and the "
                 "columns by role, as tables"]
-STEP_OUTPUT = ("the renewal raw with <column>_level_1 · the time_series rows · the JSON of the groups · tables "
-               "sff_dimension_levels (groups) and sff_dimension_level_values (values)")
+STEP_OUTPUT = "the renewal raw with <column>_level_1 · the time_series rows · the JSON of the groups"
 
 # ─── named constants ─────────────────────────────────────────────────────────────
 # The only values a dichotomous column (timevarying, time_series flag) may carry.
@@ -257,6 +256,7 @@ def check_the_values(renewal_raw: pd.DataFrame, configuration: Config, check_log
         total_column = measure.part_of
         if total_column is None:
             continue                                  # not a part of anything (the second moment): checked below
+        # a null whole is not compared here: it is the null renewal, already warned (and read as 0 by step 02)
         above_total = closed_rows[closed_rows[closed_month_column] > closed_rows[total_column] + configuration.money_tolerance]
         configuration.log_check(STEP_LABEL, check_log, f"{closed_month_column} is not above {total_column}, closed months",
                                 above_total.empty,
@@ -330,7 +330,7 @@ def check_the_values(renewal_raw: pd.DataFrame, configuration: Config, check_log
     if configuration.renewed_pipeline_usd_col:
         base_column = configuration.renewed_pipeline_usd_col
         base_values = closed_rows[base_column]
-        value_without_renewers = closed_rows[(renewed_units == 0) & (base_values > 0)]
+        value_without_renewers = closed_rows[(renewed_units == 0) & (base_values > 0)]      # a null renewal: warned above
         configuration.log_check(STEP_LABEL, check_log, f"{base_column} is 0 where nothing renewed, closed months",
                                 value_without_renewers.empty,
                                 failure_detail=f"{len(value_without_renewers):,} closed rows carry a renewers' due value "
@@ -373,6 +373,10 @@ def check_the_values(renewal_raw: pd.DataFrame, configuration: Config, check_log
                                                f"{' and nulls' if has_nulls else ''}",
                                 context=f"{values.isin(ACTIVE_FLAG_VALUES).mean():.0%} of rows at 1 · "
                                         f"{share_of_money(values.isin(ACTIVE_FLAG_VALUES))}")
+
+    # the maturation columns: WHEN every mark was set (k months before due), on the rows that carry the mark
+    for mark in configuration.maturation_dims:
+        check_the_maturation_columns(renewal_raw, mark, configuration, check_log)
 
     # [5] the exact discount: a share between 0 and 1, or null (unknown)
     if configuration.discount_value_column:
@@ -486,6 +490,54 @@ def report_the_closed_months(closed_rows: pd.DataFrame, configuration: Config) -
                                              f"${pipeline_usd:,.0f} due · ${renewed_usd:,.0f} renewed")
 
 
+def check_the_maturation_columns(renewal_raw: pd.DataFrame, mark: str, configuration: Config, check_log: list) -> None:
+    """The maturation columns of one mark: <mark>_month_0 … <mark>_month_<maturation_months>, the units of the row
+    whose mark was set k months before its due month (the last column: that many months or more).
+
+    RULES:   numeric and never negative (blocking) · on a row with the mark, they add up to its units due · on a row
+             without it, null or 0 · in a future month T, no unit can have been marked after the current month:
+             the columns with k < T − current month are 0 (a mark dated in the future is a leak: the extract was
+             built with information it could not have had). The last three only warn.
+    """
+    columns = configuration.maturation_columns_of(mark)
+    units_column = configuration.pipeline_units_col
+    not_numeric = [column for column in columns if not pd.api.types.is_numeric_dtype(renewal_raw[column])]
+    configuration.log_check(STEP_LABEL, check_log, f"the maturation columns of {mark} are numeric", not not_numeric,
+                            failure_detail=f"not numeric: {not_numeric}", context=f"{columns[0]} … {columns[-1]}")
+    if not_numeric:
+        return
+    timing = renewal_raw[columns].astype(float)
+    negative_rows = int((timing < 0).any(axis=1).sum())
+    configuration.log_check(STEP_LABEL, check_log, f"the maturation columns of {mark} are never negative", negative_rows == 0,
+                            failure_detail=f"{negative_rows:,} rows with a negative maturation value")
+    marked = renewal_raw[mark].isin(ACTIVE_FLAG_VALUES)
+    dated_units = timing.fillna(0.0).sum(axis=1)
+    differs = marked & ((dated_units - renewal_raw[units_column]).abs() > configuration.units_tolerance)
+    marked_units = float(renewal_raw.loc[marked, units_column].sum())
+    configuration.log_check(STEP_LABEL, check_log, f"on the rows with {mark} = 1 the maturation columns add up to {units_column}",
+                            not differs.any(),
+                            failure_detail=f"{int(differs.sum()):,} rows of {int(marked.sum()):,} where they do not "
+                                           f"({abs(float((dated_units - renewal_raw[units_column])[differs].sum())):,.0f} units of difference)",
+                            context=f"{int(marked.sum()):,} rows · {marked_units:,.0f} units with the mark, every one dated",
+                            blocking=False, examples=example_rows(renewal_raw[differs], configuration))
+    filled_unmarked = ~marked & (timing.fillna(0.0) != 0).any(axis=1)
+    configuration.log_check(STEP_LABEL, check_log, f"on the rows with {mark} = 0 the maturation columns are null or 0",
+                            not filled_unmarked.any(),
+                            failure_detail=f"{int(filled_unmarked.sum()):,} rows without the mark carry a date of it",
+                            blocking=False, examples=example_rows(renewal_raw[filled_unmarked], configuration))
+    current_month = configuration.calendar_boundaries()["current"]
+    months_after_current = renewal_raw[configuration.period_col].map(lambda month: (month - current_month).n).to_numpy()
+    impossible = np.zeros(len(renewal_raw), dtype=bool)
+    for months_before, column in enumerate(columns[:-1]):        # the last one is "that many months or more": always possible
+        impossible |= (months_before < months_after_current) & (timing[column].fillna(0.0).to_numpy() > 0)
+    configuration.log_check(STEP_LABEL, check_log, f"no unit of a future month has {mark} dated after the current month",
+                            not impossible.any(),
+                            failure_detail=f"{int(impossible.sum()):,} future rows with {mark} set after {current_month} "
+                                           f"(a leak: the extract knows something that has not happened yet)",
+                            context=f"future month T: only k ≥ T − {current_month} can carry units",
+                            blocking=False, examples=example_rows(renewal_raw[impossible], configuration))
+
+
 def check_no_nulls(configuration: Config, check_log: list, rows: pd.DataFrame, column_name: str, scope: str) -> None:
     null_rows = int(rows[column_name].isna().sum())
     configuration.log_check(STEP_LABEL, check_log, f"{column_name} has no nulls, {scope}", null_rows == 0,
@@ -531,9 +583,15 @@ def build_the_levels(renewal_raw: pd.DataFrame, configuration: Config, check_log
     # [7] the declared dimensions and the file
     path = configuration.levels_path or os.path.join(configuration.output_folder or ".", "sff_levels.json")
     stored = read_levels_file(path)
+    # a dimension is generated again when the file does not have it, its type changed, its merge criterion changed
+    # (the fixed threshold or the support floor it is derived from), or the file was trained with months that are not
+    # training months for this run (a later current month: they would leak the exam and the future into the groups)
+    trained_later = str(stored.get("current_month", "")) > str(configuration.current_month)
     to_generate = [column_name for column_name, level_type in configuration.leveled_dims.items()
-                   if column_name not in stored.get("dims", {}) or stored["dims"][column_name]["type"] != level_type
-                   or stored["dims"][column_name].get("criterion", {}).get("fixed_pp") != configuration.level_merge_max_pp]
+                   if trained_later or column_name not in stored.get("dims", {})
+                   or stored["dims"][column_name]["type"] != level_type
+                   or stored["dims"][column_name].get("criterion", {}).get("fixed_pp") != configuration.level_merge_max_pp
+                   or stored["dims"][column_name].get("criterion", {}).get("support_floor") != configuration.support_floor]
     configuration.log_action(STEP_LABEL, 7, f"{len(configuration.leveled_dims)} dimensions with a generated level "
                                             f"{list(configuration.leveled_dims)} · file {path}: "
                                             + (f"found ({stored.get('created', '?')}), " if stored.get("dims") else "not found, ")
@@ -570,11 +628,9 @@ def build_the_levels(renewal_raw: pd.DataFrame, configuration: Config, check_log
                                                                                      for column_name, values in unknown_values.items()),
                             blocking=False)
 
-    # [11] the tables
-    configuration.log_action(STEP_LABEL, 11, "writing the levels")
+    # [11] the levels as tables (shown in action 14; the file is the record, they are not written to SQL)
+    configuration.log_action(STEP_LABEL, 11, "the levels as tables")
     levels_table, values_table, decisions_table = levels_as_tables(stored, configuration)
-    configuration.write_table(STEP_LABEL, check_log, levels_table, TABLE_DIMENSION_LEVELS)
-    configuration.write_table(STEP_LABEL, check_log, values_table, TABLE_DIMENSION_LEVEL_VALUES)
     return raw, (stored, levels_table, values_table, decisions_table)
 
 
@@ -725,7 +781,7 @@ def show_the_evidence(stored: dict, levels_table: pd.DataFrame, values_table: pd
                                                 f"standardised rates differ by ≤ {criterion.get('threshold_pp', '?')} pp — "
                                                 f"{criterion.get('rule', '?')} · {len(groups)} groups"
                                                 + (" · ONE group: the dimension does not separate the renewal rate beyond that "
-                                                   "noise; its level_1 is constant and gets no pass of the ladder (step 09)"
+                                                   "noise; its level_1 is constant and its pass of the ladder merges nothing (step 09)"
                                                    if len(groups) == 1 else ""))
     rate = next(iter(stored["dims"].values())).get("criterion", {}).get("global_rate", 0.64)
     noise_rows = [{"contracts_a_month": support, "binomial_noise_pp": round(100 * np.sqrt(rate * (1 - rate) / support), 1)}

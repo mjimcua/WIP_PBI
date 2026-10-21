@@ -44,7 +44,7 @@ def test_the_stages() -> None:
 def test_the_audit_tables() -> None:
     print("B · the audit tables add up to their sources")
     results, console = run_synthetic()
-    check("18 checks: 18 ok" in console.split("STEP AUD")[1], "the 18 checks of the audit step pass")
+    check("12 checks: 12 ok" in console.split("STEP AUD")[1], "the 12 checks of the audit step pass")
     audit = results["audit"]
     techniques = audit["composition_techniques"]
     check(set(techniques["status"]) <= {"tested", "not_enough_history", "composition_below_floor"}
@@ -53,17 +53,8 @@ def test_the_audit_tables() -> None:
     members = audit["credibility_members"]
     check(set(members["role"]) <= {"borrower", "lender"} and len(audit["credibility"]) == members["credibility_ref_id"].nunique(),
           "every reference with its members, borrowers and lenders")
-    backtest = audit["series_backtest"]
-    one_series = backtest[backtest["fs_id"] == "EU|A|0|0|0|0|web"]
-    check(one_series["tecnica"].nunique() == 10 and (one_series.groupby(["mes_objetivo", "h"])["is_chosen"].sum() == 1).all(),
-          "selecting a forecast series: every technique tested on its months, the chosen one marked")
-    row = backtest.iloc[0]
-    check(abs(row["pred_units"] - row["pred_rate"] * row["due_units"]) < 1e-9
-          and abs(row["err_pp"] - 100 * (row["pred_rate"] - row["real_rate"])) < 1e-9,
-          "a series' prediction is the rate times its own units due; the error is in pp of its own rate")
-    summary = audit["series_technique_summary"]
-    check((summary.groupby(["fs_id", "tramo_h"])["best_for_series"].sum() >= 1).all() and summary["chosen_rank"].notna().all(),
-          "the summary ranks the techniques within every series and says where the chosen one ranks")
+    check(not {"series_backtest", "series_technique_summary"} & set(audit),
+          "the backtest of every series is not recomputed here: step 19 examines every forecast series")
     dynamics = audit["series_dynamics"]
     check(set(dynamics["measurable"]) <= {"yes", "low_support", "short_history"}
           and dynamics.loc[dynamics["measurable"] == "short_history", "phi"].isna().all(),

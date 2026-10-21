@@ -12,13 +12,11 @@ most collapse_passes dims, and the rate blends with the reference by credibility
 import numpy as np
 import pandas as pd
 
-from step_05_lookups import build_lookups
 from step_08_rate_series import build_rate_series
 from step_09_dimensions import analyse_dimensions
 from step_10_ladder_groups import build_ladder_groups
 from step_11_ladder import binomial_se_pp, climb_the_ladder
 from test_helpers import check, console_of, finish
-from test_step_05 import units_synthetic
 from test_step_08 import inputs_synthetic
 
 
@@ -27,10 +25,8 @@ def inputs_of_the_ladder(**overrides):
     frames = {}
     console_of(lambda: frames.setdefault("rate", build_rate_series(units, series, configuration)))
     rated_units, series_rate = frames["rate"]
-    fine, _, _ = units_synthetic()
-    console_of(lambda: frames.setdefault("lookups", build_lookups(fine, units, configuration)))
-    console_of(lambda: frames.setdefault("dims", analyse_dimensions(series_rate, frames["lookups"]["lookup_fs"], configuration)))
-    return rated_units, series_rate, frames["lookups"]["lookup_fs"], frames["dims"][0], configuration
+    console_of(lambda: frames.setdefault("dims", analyse_dimensions(series_rate, series, configuration)))
+    return rated_units, series_rate, series, frames["dims"], configuration
 
 
 def test_the_passes() -> None:
@@ -41,7 +37,7 @@ def test_the_passes() -> None:
                                                                                  decision, configuration)))
     ladder = frames["ladder"]
     steps, summary, groups = ladder["steps"], ladder["summary"], ladder["groups"]
-    check("9 checks: 9 ok" in console, "the 9 checks of step 10 pass")
+    check("8 checks: 8 ok" in console, "the 8 checks of step 10 pass")
     check(list(summary["step_name"][:2]) == ["itself", "sign"] and summary["step_name"].iloc[2].startswith("extra"),
           "the passes in order: itself → sign → extras → mandatory dims")
     check(summary["units_due"].nunique() == 1, "every pass is a partition: the units due add up to the same total")
@@ -104,7 +100,7 @@ def test_the_rate() -> None:
                                                                        decision, configuration)))
     console = console_of(lambda: frames.setdefault("estimate", climb_the_ladder(series_rate, frames["ladder"], configuration)))
     estimate = frames["estimate"][0]
-    check("6 checks: 6 ok" in console, "the 6 checks of step 11 pass")
+    check("5 checks: 5 ok" in console, "the 5 checks of step 11 pass")
 
     big = estimate[estimate["fs_id"] == "EU|A|0|0|0|0|web"].iloc[0]
     check(big["z"] == 1.0 and abs(big["tasa_estimada"] - big["tasa_propia"]) < 1e-12 and big["nivel_riesgo"] == "A_propio",

@@ -28,22 +28,27 @@ Tables written (one per auxiliary table; this step will grow with the report):
 
 Actions (logged as they are done):
   1. the table of pipeline sources: code, label, block, order
-  2. check it against the core                                           checks 1-2
-  3. write it                                                            check 3
-  4. count the checks; stop if any failed
-  5. show the table
+  2. the price increase monitor and its calendar: the uplift of the closed months and its steps
+  3. the parameters of this run: every field of the Config, its value and the steps that read it
+  4. check the tables against the core                                   checks 1-4
+  5. write them                                                          checks 5-8
+  6. count the checks; stop if any failed
+  7. show the tables
 
 Checks (logged as they are made, numbered, at the level of their status):
    1. every forecast_pipeline_source of the core has its row (no row of the core left without a label)
    2. one row per source (the key is unique: the relation in Power BI is 1 → n)
-   3. table sff_forecast_pipeline_source written and read back
+   3. every closed pipeline month with renewals has its uplift in the monitor
+   4. an increase is only flagged against a reference of enough previous months
+   5-8. tables sff_forecast_pipeline_source, sff_price_increase_monitor, sff_price_increase_calendar and
+        sff_parametros written and read back
 """
 
 # ─── imports ─────────────────────────────────────────────────────────────────────
 import pandas as pd
 
 from config import Config, parameter_table
-from price_increases import detect_increases, increase_calendar, price_monitor      # detect_increases: for the tests
+from price_increases import increase_calendar, price_monitor
 from step_nucleo import FINAL_ORIGIN_COLUMN, TS_WITHOUT_RESULT
 from vocabulario import (ROW_FROM_GAP, TOTAL_ORIGIN_EXPECTED, TOTAL_ORIGIN_PROJECTED, TOTAL_ORIGIN_RENEWED,
                          TOTAL_ORIGIN_SIMULATED, TS_PROJECTED, TS_REAL, TS_REENTRY)
@@ -60,8 +65,9 @@ STEP_ACTIONS = ["the table of pipeline sources: code, label, block, order",
                 "write them (checks 5-8)",
                 "count the checks; stop if any failed",
                 "show the tables"]
-STEP_OUTPUT = ("tables sff_forecast_pipeline_source (one row per forecast_pipeline_source) and "
-               "sff_price_increase_monitor (one row per closed pipeline month)")
+STEP_OUTPUT = ("tables sff_forecast_pipeline_source (one row per forecast_pipeline_source), sff_price_increase_monitor "
+               "(price group × closed pipeline month), sff_price_increase_calendar (one row per increase) and "
+               "sff_parametros (one row per field of the Config)")
 
 PIPELINE_SOURCE_TABLE = "forecast_pipeline_source"
 PRICE_MONITOR_TABLE = "price_increase_monitor"

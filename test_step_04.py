@@ -26,6 +26,14 @@ def fine_synthetic(**overrides):
     return frames["fine"], configuration
 
 
+def units_synthetic():
+    """The fine table and its forecast units, on the synthetic raw: the input of steps 06 to 11."""
+    fine, configuration = fine_synthetic()
+    frames = {}
+    console_of(lambda: frames.setdefault("units", build_forecast_units(fine, configuration)))
+    return fine, frames["units"], configuration
+
+
 def run_step(fine, configuration):
     frames = {}
     console = console_of(lambda: frames.setdefault("units", build_forecast_units(fine, configuration)))
@@ -46,19 +54,14 @@ def test_the_units() -> None:
     projection = units["rol"] == "proyeccion"
     check(units.loc[projection, "total_renewed_units"].isna().all() and units.loc[~projection, "total_renewed_units"].notna().all(),
           "renewals null in the projection, numbers in closed months")
-    check(count_status(console, "ok") == 5 and "5 checks: 5 ok" in console, "the 5 checks pass and are logged")
-    written = pd.read_sql("SELECT COUNT(*) AS n FROM sff_fact_fu", configuration.sql_engine)["n"].item()
-    check(written == len(units), "sff_fact_fu written with every unit")
+    check(count_status(console, "ok") == 3 and "3 checks: 3 ok" in console, "the 3 checks pass and are logged")
+    check("sff_fact_fu" not in pd.read_sql("SELECT name FROM sqlite_master", configuration.sql_engine)["name"].tolist(),
+          "the units stay in memory: no SQL table")
 
 
 def test_the_failures() -> None:
     print("B · what stops and what warns")
     fine, configuration = fine_synthetic()
-    unit_with_two_rows = fine["fu_id"][fine["fu_id"].duplicated()].iloc[0]
-    mixed_flag = fine.copy()
-    mixed_flag.loc[mixed_flag.index[mixed_flag["fu_id"] == unit_with_two_rows][0], "flag_time_series"] = 1
-    check_stops(lambda: build_forecast_units(mixed_flag, configuration), "is the same in every fine row of a unit",
-                "a unit whose fine rows disagree on the time_series flag stops")
     single_row_unit = fine["fu_id"].iloc[0]
     wiped = fine.copy()
     wiped.loc[wiped["fu_id"] == single_row_unit, "total_tr_units"] = 0          # the calendar wiped it, the extract had it

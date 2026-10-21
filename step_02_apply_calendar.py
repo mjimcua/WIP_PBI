@@ -24,9 +24,8 @@ Actions (logged as they are done):
      that event has not happened, or only in part, so its pipeline is not known yet and step 17
      projects it (the raw keeps it in s0_vencen_*)
   5. check the calendar and the money                               checks 1-9
-  6. build the calendar table (one row per month) and write it      check 10
-  7. count the checks; stop if any failed
-  8. show the calendar per role, as a table
+  6. count the checks; stop if any failed
+  7. show the calendar per role, as a table, and the SQL of the calendar per month
 
 Checks (logged as they are made, numbered, at the level of their status):
    1. every row has one of the three roles
@@ -38,10 +37,9 @@ Checks (logged as they are made, numbered, at the level of their status):
    7. the renewals of the closed months are unchanged, a null read as 0
    8. no row from the current month on keeps a renewal
    9. the s0_ columns hold the raw's renewals and pipeline, untouched
-  10. the table sff_calendario is written and read back
 
-Output: a copy of the raw with six new columns (rol, es_mes_en_curso, s0_renovados_*, s0_vencen_*),
-and the table sff_calendario (one row per month: its role and its money).
+Output: a copy of the raw with six new columns (rol, es_mes_en_curso, s0_renovados_*, s0_vencen_*).
+The calendar per month is not a table: its SQL over sff_nucleo is printed (report_queries.calendar_query).
 """
 
 # ─── imports ─────────────────────────────────────────────────────────────────────
@@ -52,7 +50,7 @@ from config import Config, is_one_year
 from report_queries import calendar_query, roles_query
 from vocabulario import (CALENDAR_ROLE_COLUMN, CURRENT_MONTH_COLUMN, ROLE_PROJECTION,
                          ROLE_TEST, ROLE_TRAIN, ROLES_IN_ORDER, S0_RENEWED_UNITS_COLUMN, S0_RENEWED_USD_COLUMN,
-                         TABLE_CALENDAR, S0_PIPELINE_UNITS_COLUMN, S0_PIPELINE_USD_COLUMN)
+                         S0_PIPELINE_UNITS_COLUMN, S0_PIPELINE_USD_COLUMN)
 
 
 # ─── the step ────────────────────────────────────────────────────────────────────
@@ -67,12 +65,10 @@ STEP_ACTIONS = ["keep the raw's renewals and pipeline in the s0_ columns",
                 "from the current month on: wipe the renewals already booked, and the pipeline of 1-year licences "
                 "sold or renewed from the current month on (due 12 months later): it is not known yet, it will be projected",
                 "check the calendar and the money (checks 1-9)",
-                "build the calendar table (one row per month) and write it (check 10)",
                 "count the checks; stop if any failed",
                 "show the calendar per role, as a table"]
 STEP_OUTPUT = ("the raw with six new columns (rol, es_mes_en_curso, s0_renovados_unidades, s0_renovados_usd, "
-               "s0_vencen_unidades, s0_vencen_usd) · "
-               "table sff_calendario (one row per month)")
+               "s0_vencen_unidades, s0_vencen_usd)")
 
 # ─── named constants ─────────────────────────────────────────────────────────────
 # Below a year of training months no seasonal pattern can be learned.
@@ -133,7 +129,7 @@ def apply_calendar(validated: pd.DataFrame, configuration: Config) -> pd.DataFra
     wiped_per_term = (calendared.loc[not_known_yet, configuration.term_column].astype(str).value_counts().to_dict()
                       if configuration.term_column else "no term_column: every licence is treated as 1-year")
     configuration.log_action(STEP_LABEL, "4b", f"{int(not_known_yet.sum()):,} rows of 1-year licences due from "
-                                            f"{boundaries['current'] + 12} on (sold or renewed from {boundaries['current']} on): "
+                                            f"{boundaries['current'] + configuration.one_year_term_months} on (sold or renewed from {boundaries['current']} on): "
                                             f"pipeline wiped {wiped_pipeline_units:,.0f} units · ${wiped_pipeline_usd:,.0f} "
                                             f"(it will be projected) · rows wiped per term: {wiped_per_term}")
 
@@ -144,38 +140,13 @@ def apply_calendar(validated: pd.DataFrame, configuration: Config) -> pd.DataFra
     check_money_conserved(validated, calendared, configuration, check_log, closed_rows, projection_rows,
                           null_renewals_read_as_zero, rows_with_early_results, wiped_units, wiped_usd, not_known_yet)
 
-    # [6] the calendar table: one row per month, written
-    calendar_table = build_calendar_table(calendared, configuration)
-    configuration.log_action(STEP_LABEL, 6, f"calendar table built: {len(calendar_table)} months; writing it")
-    configuration.write_table(STEP_LABEL, check_log, calendar_table, TABLE_CALENDAR)
-
-    # [7] the count of the checks; stop if anything failed
-    configuration.log_action(STEP_LABEL, 7, "counting the checks")
+    # [6] the count of the checks; stop if anything failed
+    configuration.log_action(STEP_LABEL, 6, "counting the checks")
     configuration.log_check_summary(STEP_LABEL, STEP_NAME, check_log)
 
-    # [8] what the calendar looks like on the raw
+    # [7] what the calendar looks like on the raw
     log_calendar_report(calendared, configuration, months_per_role)
     return calendared
-
-
-def build_calendar_table(calendared: pd.DataFrame, configuration: Config) -> pd.DataFrame:
-    """One row per month of the raw: its role, whether it is the current month, and its
-    money (what fell due, what was renewed after step 02, and what the raw said)."""
-    period_column = configuration.period_col
-    calendar_table = (calendared
-                      .groupby(period_column, sort=True)
-                      .agg(rol=(CALENDAR_ROLE_COLUMN, "first"),
-                           es_mes_en_curso=(CURRENT_MONTH_COLUMN, "max"),
-                           filas=(period_column, "size"),
-                           unidades_vencen=(configuration.pipeline_units_col, "sum"),
-                           usd_vence=(configuration.pipeline_usd_col, "sum"),
-                           unidades_renovadas=(configuration.renewed_units_col, lambda values: values.sum(min_count=1)),
-                           usd_renovado=(configuration.renewed_usd_col, lambda values: values.sum(min_count=1)),
-                           s0_renovados_unidades=(S0_RENEWED_UNITS_COLUMN, lambda values: values.sum(min_count=1)),
-                           s0_renovados_usd=(S0_RENEWED_USD_COLUMN, lambda values: values.sum(min_count=1)))
-                      .reset_index())
-    calendar_table["tasa_unidades"] = calendar_table["unidades_renovadas"] / calendar_table["unidades_vencen"]
-    return calendar_table
 
 
 def months_by_role(calendared: pd.DataFrame, configuration: Config) -> dict:
@@ -226,7 +197,7 @@ def check_money_conserved(validated: pd.DataFrame, calendared: pd.DataFrame, con
                           check_log: list, closed_rows: pd.Series, projection_rows: pd.Series,
                           null_renewals_read_as_zero: int, rows_with_early_results: int,
                           wiped_units: float, wiped_usd: float, not_known_yet: pd.Series) -> None:
-    """Checks 5 to 8: the step only changed what it was meant to change."""
+    """Checks 5 to 9: the step only changed what it was meant to change."""
     renewed_columns = [configuration.renewed_units_col, configuration.renewed_usd_col]
 
     # [5] the pipeline is unchanged, except the rows whose event has not happened yet
@@ -271,8 +242,8 @@ def check_money_conserved(validated: pd.DataFrame, calendared: pd.DataFrame, con
 
 
 def log_calendar_report(calendared: pd.DataFrame, configuration: Config, months_per_role: dict) -> None:
-    """Action 8: per role, its months, rows and money, as a table."""
-    configuration.log_action(STEP_LABEL, 8, "per role: months, rows, what fell due and what was renewed "
+    """Action 7: per role, its months, rows and money, as a table; and the SQL of the calendar per month."""
+    configuration.log_action(STEP_LABEL, 7, "per role: months, rows, what fell due and what was renewed "
                                             "(the projection shows no renewal: it was wiped)")
     summary_rows = []
     for role in ROLES_IN_ORDER:
@@ -292,4 +263,4 @@ def log_calendar_report(calendared: pd.DataFrame, configuration: Config, months_
         })
     configuration.show_table(pd.DataFrame(summary_rows))
     configuration.show_query(STEP_LABEL, "the calendar per role", roles_query(configuration))
-    configuration.show_query(STEP_LABEL, "the calendar per month (sff_calendario)", calendar_query(configuration))
+    configuration.show_query(STEP_LABEL, "the calendar per month", calendar_query(configuration))

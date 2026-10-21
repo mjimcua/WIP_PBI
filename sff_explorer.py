@@ -116,14 +116,14 @@ SERIES_COLOURS = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#00830
 INK, MUTED, BAND = "#14171c", "#78808b", "rgba(42, 120, 214, 0.18)"
 CONFIDENCE_COLOURS = {"high": "#0ca30c", "medium": "#fab219", "low": "#d03b3b"}
 CONFIDENCE_LABELS = {"high": "Alta", "medium": "Media", "low": "Baja"}
-METHOD_LABELS = {"framework": "Framework", "raw": "Serie sola (raw)", "hoja_mandatory": "Hoja: su celda",
-                 "hoja_global": "Hoja: la cartera"}
-METHOD_COLOURS = {"framework": SERIES_COLOURS[0], "raw": SERIES_COLOURS[6], "hoja_mandatory": SERIES_COLOURS[1],
-                  "hoja_global": SERIES_COLOURS[2]}
+METHOD_LABELS = {"baseline": "Baseline (su celda, últimos meses)", "raw": "Serie sola (raw)",
+                 "por_defecto": "Escalera + técnica por defecto", "framework": "Framework"}
+METHOD_COLOURS = {"framework": SERIES_COLOURS[0], "raw": SERIES_COLOURS[6], "baseline": SERIES_COLOURS[1],
+                  "por_defecto": SERIES_COLOURS[2]}
 TECHNIQUE_LABELS = {"T15_level_seasonal": "Nivel + efecto del mes", "T11_holt_winters": "Holt-Winters",
                     "T2_mean": "Media de toda la historia", "T9_ses": "Suavizado exponencial simple",
                     "T4_ewma": "Media ponderada exponencial", "T12_theta": "Theta", "T10_holt_damped": "Holt amortiguado",
-                    "T14_temporal_cred": "Credibilidad temporal", "T3_ma3": "Media de 3 meses (retador)",
+                    "T14_temporal_cred": "Credibilidad temporal", "T3_ma3": "Media de 3 meses (técnica por defecto)",
                     "T3_ma6": "Media de 6 meses"}
 PLOTLY_CONFIG = {"displaylogo": False, "responsive": True}
 TABLE_ROWS_SHOWN = 25          # rows of a table on screen (the rest: filter, or export the table)
@@ -653,7 +653,7 @@ class SFFExplorer:
                  + ("predice con su propia historia." if str(row["s11_nivel_riesgo"]).startswith("A")
                     else f"se apoya en su composición ({integer(row['s10_stage3_support'])} licencias al mes)."),
                  f"<b>4 · Con qué técnica.</b> {technique}: error de {points(row['s14_examen_err_pp_corto'])} a un mes en el examen, "
-                 f"frente a {points(row['s14_examen_retador_err_pp_corto'])} de la media de 3 meses.",
+                 f"frente a {points(row['s14_examen_por_defecto_err_pp_corto'])} de la media de 3 meses.",
                  f"<b>5 · Cuánto acertó.</b> {row['s19_exam_in_band']:.0f} de {row['s19_exam_predictions']:.0f} predicciones dentro del "
                  f"intervalo; error medio {points(row['s19_exam_mae_pp'])} frente a un ruido de {points(row['s19_exam_noise_pp'])}."
                  if pd.notna(row["s19_exam_predictions"]) else "<b>5 · Cuánto acertó.</b> No tiene meses de examen.",
@@ -896,7 +896,7 @@ class SFFExplorer:
     def page_backtest(self, composition_id: str = None, horizon: int = 1) -> list:
         items = [Title("El backtest: qué técnica predice cada composición",
                        "En los meses de selección se prueban todas las técnicas con lo que se sabía antes; gana la de menor error "
-                       "normalizado si bate al retador (media de 3 meses) por el margen. El examen, posterior, la juzga.", level=2)]
+                       "normalizado si bate a la técnica por defecto (media de 3 meses) por el margen. El examen, posterior, la juzga.", level=2)]
         decision = self.table("technique_decision")
         reference = self.table("pool_reference")
         if not decision.empty:
@@ -912,20 +912,20 @@ class SFFExplorer:
             items.append(layout(figure, "El dinero que predice cada técnica, por tramo de horizonte", 380, "USD por predecir"))
             origins = decision.groupby(["tramo_h", "tecnica_origen"]).agg(composiciones=("composition_id", "size"),
                                                                           usd_por_predecir=("usd_por_predecir", "sum")).reset_index()
-            items.append(Table(origins, "Por qué ganó: campeón (batió al retador) · retador · sin soporte (no se juzga)",
+            items.append(Table(origins, "Por qué ganó: campeón (batió a la técnica por defecto) · por defecto · sin soporte (no se juzga)",
                                formats={"usd_por_predecir": money}))
         exam = self.table("exam_by_pool")
         if not exam.empty:
             figure = go.Figure()
             for index, (band, part) in enumerate(exam.groupby("tramo_h")):
-                figure.add_scatter(x=part["retador_err_pp_medio"], y=part["elegida_err_pp_medio"], mode="markers", name=band,
+                figure.add_scatter(x=part["por_defecto_err_pp_medio"], y=part["elegida_err_pp_medio"], mode="markers", name=band,
                                    text=part["composition_id"] + " · " + part["tecnica"].astype(str),
                                    marker=dict(color=SERIES_COLOURS[index], size=8),
-                                   hovertemplate="%{text}<br>retador %{x:.2f} pp · elegida %{y:.2f} pp<extra></extra>")
-            limit = float(np.nanmax([exam["retador_err_pp_medio"].max(), exam["elegida_err_pp_medio"].max(), 1.0]))
+                                   hovertemplate="%{text}<br>por defecto %{x:.2f} pp · elegida %{y:.2f} pp<extra></extra>")
+            limit = float(np.nanmax([exam["por_defecto_err_pp_medio"].max(), exam["elegida_err_pp_medio"].max(), 1.0]))
             figure.add_scatter(x=[0, limit], y=[0, limit], mode="lines", line=dict(color=MUTED, dash="dot"), name="igual")
             figure.update_layout(hovermode="closest")
-            items.append(layout(figure, "En el examen: el error de la elegida frente al del retador (debajo de la diagonal, la elegida gana)",
+            items.append(layout(figure, "En el examen: el error de la elegida frente al de la técnica por defecto (debajo de la diagonal, la elegida gana)",
                                 400, "Error de la elegida (pp)"))
         total = self.table("exam_total")
         if not total.empty:
@@ -933,7 +933,7 @@ class SFFExplorer:
             for h_value, part in total.groupby("h"):
                 part = part.sort_values("mes_objetivo")
                 figure.add_scatter(x=part["mes_objetivo"], y=part["elegida_error_pct"], name=f"Elegida · h={h_value}", mode="lines+markers")
-                figure.add_scatter(x=part["mes_objetivo"], y=part["retador_error_pct"], name=f"Retador · h={h_value}", mode="lines+markers",
+                figure.add_scatter(x=part["mes_objetivo"], y=part["por_defecto_error_pct"], name=f"Retador · h={h_value}", mode="lines+markers",
                                    line=dict(dash="dot"))
             items.append(layout(figure, "Error del TOTAL de renovaciones en cada mes de examen", 340, "Error (%)", ".1%"))
         bands = self.table("error_bands")
@@ -963,7 +963,7 @@ class SFFExplorer:
         chosen_names = set(chosen["tecnica"])
         for index, (technique, rows) in enumerate(part.groupby("tecnica")):
             rows = rows.sort_values("mes_objetivo")
-            important = technique in chosen_names or technique == getattr(self.configuration, "challenger_technique", "T3_ma3")
+            important = technique in chosen_names or technique == getattr(self.configuration, "default_technique", "T3_ma3")
             figure.add_scatter(x=rows["mes_objetivo"], y=rows["tasa_pred"], mode="lines+markers",
                                name=TECHNIQUE_LABELS.get(technique, technique) + (" ★" if technique in chosen_names else ""),
                                visible=True if important else "legendonly",
@@ -982,7 +982,7 @@ class SFFExplorer:
     # PAGE 6 · THE EXAM: HOW WELL EVERY METHOD PREDICTED
     # ═══════════════════════════════════════════════════════════════════════════
     def page_exam(self, horizon: int = 1) -> list:
-        items = [Title("El examen: framework, serie sola y hoja de negocio en los mismos meses",
+        items = [Title("El examen: de la baseline al framework, en los mismos meses",
                        "Meses de examen predichos con lo que se sabía h meses antes. Error/ruido ≈ 1 es el límite: lo que queda "
                        "es azar binomial.", level=2)]
         summary = self.table("portfolio_exam_summary")
@@ -995,7 +995,7 @@ class SFFExplorer:
             part = monthly[monthly["h"] == horizon].sort_values("mes")
             figure = go.Figure()
             figure.add_scatter(x=part["mes"], y=part["renovadas_reales"], name="Real", line=dict(color=INK, width=3))
-            for method in ("framework", "raw", "hoja_mandatory", "hoja_global"):
+            for method in ("framework", "por_defecto", "raw", "baseline"):
                 if f"{method}_pred" in part.columns:
                     figure.add_scatter(x=part["mes"], y=part[f"{method}_pred"], name=METHOD_LABELS[method], mode="lines+markers",
                                        line=dict(color=METHOD_COLOURS[method], dash="solid" if method == "framework" else "dot"))

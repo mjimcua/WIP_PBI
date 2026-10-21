@@ -54,7 +54,7 @@ Actions (logged as they are done):
   4. the re-entry of the projected months as pipeline of next year, with the region's rate
   5. the total by year and origin
   6. check the simulation and the total                               checks 1-4
-  7. write the time_series rows and the total                          checks 5-6
+  7. write the total (the time_series rows reach sff_nucleo)          check 5
   8. count the checks; stop if any failed
   9. show the total by year × origin and the 10 regions with the most projected value
 
@@ -63,20 +63,20 @@ Checks (logged as they are made, numbered, at the level of their status):
    2. no ts_reentrada row comes from a ts_real month
    3. the implied value per unit of the projected months is inside the region's history (warning)
    4. every region with a re-entry has a rate of some region level (warning if it takes the global one)
-   5-6. tables sff_time_series and sff_forecast_total written and read back
+   5. table sff_forecast_total written and read back
 
-Output: the time_series rows (region × month) and the total (year × origin) · tables
-sff_time_series, sff_forecast_total.
+Output: the time_series rows (region × month, in memory: they reach sff_nucleo) and the total
+(year × origin) · table sff_forecast_total.
 """
 
 # ─── imports ─────────────────────────────────────────────────────────────────────
 import numpy as np
 import pandas as pd
 
-from config import Config, join_columns, parse_month, region_columns_of
+from config import Config, join_columns, region_columns_of
 from report_queries import forecast_total_query
 from vocabulario import (CALENDAR_ROLE_COLUMN, PIPELINE_ORIGIN_COLUMN, PIPELINE_PROJECTED, PIPELINE_REAL,
-                         PIPELINE_SIMULATED, TABLE_FORECAST_TOTAL, TABLE_TIME_SERIES, TOTAL_ORIGIN_EXPECTED,
+                         PIPELINE_SIMULATED, TABLE_FORECAST_TOTAL, TOTAL_ORIGIN_EXPECTED,
                          TOTAL_ORIGIN_PROJECTED, TOTAL_ORIGIN_RENEWED, TOTAL_ORIGIN_SIMULATED, TOTAL_ORIGIN_TOTAL,
                          TRUTH_ROLES, TS_PROJECTED, TS_REAL, TS_REENTRY)
 
@@ -92,10 +92,10 @@ STEP_ACTIONS = ["the time_series rows by region and month, and the calendar of t
                 "the re-entry of the projected months as pipeline of next year, with the region's rate",
                 "the total by year and origin",
                 "check the simulation and the total (checks 1-4)",
-                "write the time_series rows and the total (checks 5-6)",
+                "write the total (check 5; the time_series rows reach sff_nucleo)",
                 "count the checks; stop if any failed",
                 "show the total by year × origin and the 10 regions with the most projected value"]
-STEP_OUTPUT = "region × month rows (ts_real, ts_proyectado, ts_reentrada) · year × origin total · tables sff_time_series, sff_forecast_total"
+STEP_OUTPUT = "region × month rows (ts_real, ts_proyectado, ts_reentrada) · year × origin total · table sff_forecast_total"
 
 MONTHS_PER_YEAR = 12
 
@@ -183,8 +183,7 @@ def build_time_series_and_total(time_series_rows: pd.DataFrame, fine_table: pd.D
     check_time_series(total, time_series_table, projected, parameters, fallback_regions, reentry, configuration, check_log)
 
     # [7] the tables
-    configuration.log_action(STEP_LABEL, 7, "writing the time_series rows and the total")
-    configuration.write_table(STEP_LABEL, check_log, time_series_table, TABLE_TIME_SERIES)
+    configuration.log_action(STEP_LABEL, 7, "writing the total")
     configuration.write_table(STEP_LABEL, check_log, total, TABLE_FORECAST_TOTAL)
 
     # [8] the count of the checks; stop if anything failed
@@ -220,6 +219,9 @@ def region_parameters(closed_monthly: pd.DataFrame, current, configuration: Conf
                                "cuota_unidades": grouped["unidades"].sum() / auv_window["unidades"].sum()})
     monthly_auv = auv_window.assign(_auv=auv_window["valor"] / auv_window["unidades"].replace(0, np.nan)).groupby(region)["_auv"]
     parameters["valor_medio_min"], parameters["valor_medio_max"] = monthly_auv.min(), monthly_auv.max()
+    # a region with no row in the level window sold nothing there: 0 recent units, so a level of 0 (not "unknown",
+    # which would project it by its share); without units a year before, the level stays unknown
+    parameters["unidades_recientes"] = parameters["unidades_recientes"].fillna(0.0)
     parameters["nivel"] = parameters["unidades_recientes"] / parameters["unidades_ano_anterior"].replace(0, np.nan)
     parameters.attrs["total_nivel"] = float(recent.sum() / before.sum()) if before.sum() > 0 else np.nan
     parameters.attrs["total_valor_medio"] = float(auv_window["valor"].sum() / auv_window["unidades"].sum()) if auv_window["unidades"].sum() > 0 else np.nan

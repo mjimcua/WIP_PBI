@@ -10,7 +10,7 @@ The dimensions keep their names: they are the slicers.
 It can be built after ANY step from 03 on: every block of columns is added only when the
 step that produces it has run (its argument is not None), and the legend describes the
 columns present. main.py builds it last, with everything. It grows with every step of the
-mirror: a new step adds its block here. Today: steps 00-14. The values of steps 13 and
+framework: a new step adds its block here (today steps 00-19 and the forecast). The values of steps 13 and
 14 belong to the ESTIMATION ID of the series (the pool it takes its rate from); a series
 whose pool was not measured (no support, short history) has them empty.
 
@@ -30,29 +30,35 @@ complete and the sums still reconcile with the extract.
 Actions (logged as they are done):
   1. the rows of the extract (the fine table) with their raw and step-02 measures and their ids
   2. the gap rows of step 08
-  3. the values of the forecast unit (steps 04, 07), if they have run
+  3. the values of the forecast unit (step 04), if it has run
   4. the forecast rows (step 17), the final block, and the forecast series dimension (one row per series)
   5. the legend: every column, its step, its level and how to aggregate it
-  6. check the core against the extract and the legend              checks 1-4
-  7. write the core and its legend                                  checks 5-6
+  6. check the core against the extract, the legend and the total      checks 1-7
+  7. write the core, the dimension and the legend                      checks 8-10
   8. count the checks; stop if any failed
   9. show one series as it looks in the core, and how to read it in Power BI
 
 Checks (logged as they are made, numbered, at the level of their status):
-   1. one row per fine row of the extract plus one per gap
-   2. the money reconciles with the extract (units and USD due, renewed as the raw had it)
-   3. every row has the values of every block present
-   4. the legend describes every column of the core
-   5-6. tables sff_nucleo and sff_nucleo_leyenda written and read back
+   1. the forecast series dimension has one row per forecast series of the core
+   2. the exam sums of the dimension equal step 19's (each series once)
+   3. every original record and every synthetic row, once
+   4. the money reconciles with the extract (units and USD due, renewed as the raw had it)
+   5. every row has the values of every block present
+   6. the legend describes every column of the core
+   7. the core summed by year and origin = sff_forecast_total
+   8-10. tables sff_nucleo, sff_forecast_series and sff_nucleo_leyenda written and read back
 
-Output: the core table and its legend · tables sff_nucleo, sff_nucleo_leyenda.
+Output: the core table, the forecast series dimension and the legend · tables sff_nucleo, sff_forecast_series,
+sff_nucleo_leyenda.
 """
 
 # ─── imports ─────────────────────────────────────────────────────────────────────
+import re
+
 import numpy as np
 import pandas as pd
 
-from config import Config, join_columns
+from config import Config
 from vocabulario import (CALENDAR_ROLE_COLUMN, COMPOSITION_ID_COLUMN, COVERAGE_COLUMN, CURRENT_MONTH_COLUMN,
                          FINE_ROWS_COLUMN, PIPELINE_ORIGIN_COLUMN, PIPELINE_PROJECTED, PIPELINE_SIMULATED, ROLE_TEST,
                          ROLE_TRAIN, ROUTE_COLUMN, ROW_FROM_GAP, ROW_FROM_RAW, ROW_ORIGIN_COLUMN,
@@ -60,9 +66,11 @@ from vocabulario import (CALENDAR_ROLE_COLUMN, COMPOSITION_ID_COLUMN, COVERAGE_C
                          S0_RENEWED_USD_COLUMN, SERIES_ID_COLUMN, SIGN_COLUMN, SYNTHETIC_COLUMN, TABLE_CORE,
                          TABLE_CORE_LEGEND, TABLE_FORECAST_SERIES, TOTAL_ORIGIN_EXPECTED, TOTAL_ORIGIN_PROJECTED,
                          TOTAL_ORIGIN_RENEWED, TOTAL_ORIGIN_SIMULATED, TOTAL_ORIGIN_TOTAL, TS_PROJECTED, TS_REAL,
-                         TS_REENTRY, UNIT_ID_COLUMN, UNIVERSE_COLUMN, UPLIFT_CELL_ID_COLUMN,
+                         TS_REENTRY, UNIT_ID_COLUMN, UPLIFT_CELL_ID_COLUMN,
                          TRUTH_ROLES as TRUTH_ROLES_OF_CORE)
 
+
+STEP_COLUMN_PATTERN = re.compile(r"^s\d+_")      # a column of a step block of the core (s03_fs_id, s17_tasa…)
 
 # ─── the step ────────────────────────────────────────────────────────────────────
 STEP_LABEL = "NU"
@@ -124,17 +132,15 @@ ROW_VALUES_STEP_17 = [(PIPELINE_ORIGIN_COLUMN, "s17_origen_pipeline", "17", "rea
                       ("maduracion_unidades_migran", "s17_maduracion_unidades_migran", "17",
                        "units of the row expected to be marked before falling due (SUM)"),
                       ("maduracion_delta_unidades", "s17_maduracion_delta_unidades", "17",
-                       "the maturation adjustment of the renewed units: next to the forecast, not in it (SUM)"),
+                       "the maturation adjustment of the renewed units: already IN the forecast (expected = base + this) (SUM)"),
                       ("maduracion_delta_usd", "s17_maduracion_delta_usd", "17",
-                       "the maturation adjustment of the renewed USD: next to the forecast, not in it (SUM)")]
+                       "the maturation adjustment of the renewed USD: already IN the forecast (expected = base + this) (SUM)")]
 
 # The blocks of values of the forecast unit, of the series and of its estimation id:
 # (source column, core name, step, description). A block enters when its step has run.
 UNIT_VALUES_STEP_04 = [(FINE_ROWS_COLUMN, "s04_filas_finas", "04", "fine rows added into the unit")]
-UNIT_VALUES_STEP_07 = [("moe_pp_max", "s07_moe_pp_max", "07", "worst-case binomial margin of the unit's rate (pp, at z): the yardstick")]
 SERIES_VALUES_STEP_06 = [(ROUTE_COLUMN, "s06_ruta", "06", "predecible · solo_historia · solo_futuro"),
                          (COVERAGE_COLUMN, "s06_cobertura", "06", "the roles the series has, in time order"),
-                         (UNIVERSE_COLUMN, "s06_universo", "06", "normal · serie_temporal · mixto"),
                          ("usd_por_predecir", "s06_usd_por_predecir", "06", "USD due in the months to predict, whole series")]
 SERIES_VALUES_STEP_08 = [("n_propio", "s08_n_propio", "08", "units due in a typical closed month of the series"),
                          ("tasa_propia", "s08_tasa_propia", "08", "own rate of the series: Σ renewed / Σ due over its closed months"),
@@ -160,7 +166,7 @@ SERIES_VALUES_STEP_11 = [("group_series", "s11_composition_series", "11", "forec
                          ("alcanzo_suelo", "s11_alcanzo_suelo", "11", "1 when its final group reaches the support floor"),
                          ("k", "s11_k", "11", "Bühlmann k of the reference"),
                          ("z", "s11_z", "11", "credibility of the group's own rate: n / (n + k); 1 without a reference"),
-                         ("tasa_estimada", "s11_tasa_estimada", "11", "estimated rate: z·group + (1 − z)·reference (the same for every series of a group)"),
+                         ("tasa_estimada", "s11_tasa_estimada", "11", "diagnostic: z·group + (1 − z)·reference over the whole history (the forecast moves the technique's prediction by the same credibility, step 17)"),
                          ("se_estimacion_pp", "s11_se_estimacion_pp", "11", "error of the estimate (pp)"),
                          ("se_prediccion_pp", "s11_se_prediccion_pp", "11", "error of next month's prediction (pp): never below the series' own noise"),
                          ("nivel_riesgo", "s11_nivel_riesgo", "11", "how the rate was obtained: A_propio … N_sin_impacto")]
@@ -205,14 +211,14 @@ ESTIMATION_VALUES_STEP_13 = [("phi", "s13_phi", "13", "φ of the estimation id: 
                              ("meses_bajo", "s13_meses_bajo", "13", "calendar months below the others beyond twice their error")]
 # step 14, per estimation id and horizon band (pivoted: one column per band)
 ESTIMATION_VALUES_STEP_14 = [("tecnica", "s14_tecnica", "14", "the technique chosen for the estimation id in this horizon band"),
-                             ("tecnica_origen", "s14_origen", "14", "campeon (beat the challenger) · retador · sin_soporte (not judged)"),
+                             ("tecnica_origen", "s14_origen", "14", "campeon (beat the default technique) · por_defecto · sin_soporte (not judged)"),
                              ("elegida_err_pp_medio", "s14_examen_err_pp", "14", "mean |error| of the chosen technique in the exam months (pp of rate)"),
-                             ("retador_err_pp_medio", "s14_examen_retador_err_pp", "14", "the same for the challenger: the one to beat"),
+                             ("por_defecto_err_pp_medio", "s14_examen_por_defecto_err_pp", "14", "the same for the default technique: the one to beat"),
                              ("dentro_banda", "s14_examen_dentro_banda", "14", "share of the exam errors inside the band (nominal 90 %)")]
 
 
 def build_core_table(fine_table: pd.DataFrame, configuration: Config, forecast_units: pd.DataFrame = None,
-                     support_bound: pd.DataFrame = None, rated_units: pd.DataFrame = None,
+                     rated_units: pd.DataFrame = None,
                      series_table: pd.DataFrame = None, series_rate: pd.DataFrame = None,
                      series_estimate: pd.DataFrame = None, pool_dynamics: pd.DataFrame = None,
                      technique_decision: pd.DataFrame = None, exam_by_pool: pd.DataFrame = None,
@@ -255,7 +261,7 @@ def build_core_table(fine_table: pd.DataFrame, configuration: Config, forecast_u
                                             f"({time_series_core_rows[ROW_ORIGIN_COLUMN].value_counts().to_dict() if len(time_series_core_rows) else {}})")
 
     # [3] the values of the forecast unit
-    for block_frame, block_specs in ((forecast_units, UNIT_VALUES_STEP_04), (support_bound, UNIT_VALUES_STEP_07)):
+    for block_frame, block_specs in ((forecast_units, UNIT_VALUES_STEP_04),):
         if block_frame is not None:
             core = add_block(core, block_frame, UNIT_ID_COLUMN, "s03_fu_id", block_specs)
             blocks_present.append(block_specs)
@@ -393,7 +399,7 @@ def add_backtest_block(core: pd.DataFrame, technique_decision: pd.DataFrame, exa
     """The chosen technique and the exam error of the row's estimation id, one column per horizon band."""
     per_band = technique_decision[[COMPOSITION_ID_COLUMN, "tramo_h", "tecnica", "tecnica_origen"]]
     if exam_by_pool is not None:
-        per_band = per_band.merge(exam_by_pool[[COMPOSITION_ID_COLUMN, "tramo_h", "elegida_err_pp_medio", "retador_err_pp_medio",
+        per_band = per_band.merge(exam_by_pool[[COMPOSITION_ID_COLUMN, "tramo_h", "elegida_err_pp_medio", "por_defecto_err_pp_medio",
                                                 "dentro_banda"]], on=[COMPOSITION_ID_COLUMN, "tramo_h"], how="left")
     wide = per_band.pivot(index=COMPOSITION_ID_COLUMN, columns="tramo_h")
     specs = []
@@ -591,7 +597,8 @@ def rows_of_the_extension(forecast: pd.DataFrame, core_columns, configuration: C
     rows = pd.DataFrame({ROW_ORIGIN_COLUMN: extension[PIPELINE_ORIGIN_COLUMN].to_numpy(),
                          configuration.period_col: extension[configuration.period_col].to_numpy()})
     for column_name in core_columns:
-        if column_name in extension.columns and column_name not in rows.columns and not column_name.startswith("s"):
+        # the dimensions of the extract (softcancel, sku… too); the step blocks (s00_, s03_, s17_…) are filled below
+        if column_name in extension.columns and column_name not in rows.columns and not STEP_COLUMN_PATTERN.match(column_name):
             rows[column_name] = extension[column_name].to_numpy()
     for measure_name, _, _ in RAW_MEASURES:
         rows[measure_name] = 0.0
@@ -644,7 +651,7 @@ def core_legend(core: pd.DataFrame, dimension_columns: list, blocks_present: lis
     legend_rows += [("s03_fs_id", "03", LEVEL_ROW, AGGREGATE_SLICER, "the rate series: select one to see its story"),
                     ("s03_fu_id", "03", LEVEL_ROW, AGGREGATE_SLICER, "the forecast unit: the series in its month"),
                     ("s03_uplift_cell_id", "03", LEVEL_ROW, AGGREGATE_SLICER, "the price context (uplift cell)")]
-    unit_names = {name for _, name, _, _ in UNIT_VALUES_STEP_04 + UNIT_VALUES_STEP_07}
+    unit_names = {name for _, name, _, _ in UNIT_VALUES_STEP_04}
     row_names = {name for _, name, _, _ in ROW_VALUES_STEP_17}
     summable = {"s17_esperado_unidades", "s17_esperado_usd", "s17_esperado_usd_bajo", "s17_esperado_usd_alto",
                 "s17_vencen_unidades", "s17_vencen_usd", "s17_maduracion_unidades_migran", "s17_maduracion_delta_unidades",
@@ -704,7 +711,7 @@ def check_core(core: pd.DataFrame, fine_table: pd.DataFrame, gap_rows: pd.DataFr
 
     # [3] every row has the values of every block present (the first column of each block);
     #     a gap is not a unit of step 04, so the unit blocks are checked on the rows of the extract
-    unit_names = {name for _, name, _, _ in UNIT_VALUES_STEP_04 + UNIT_VALUES_STEP_07}
+    unit_names = {name for _, name, _, _ in UNIT_VALUES_STEP_04}
     first_columns = [block_specs[0][1] for block_specs in blocks_present if block_specs and block_specs[0][1] in core.columns
                      and not block_specs[0][1].startswith(("s13_", "s14_", "s17_", "s19_", "forecast_"))]
     series_columns = [name for name in first_columns if name not in unit_names]

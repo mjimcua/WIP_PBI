@@ -1,17 +1,34 @@
 """
-step_19_series_exam.py — The exam of every forecast series: how much better the framework
-predicts than the forecast series alone (raw) and than the spreadsheet the business uses.
+step_19_series_exam.py — The exam of every forecast series: how much better the framework predicts than
+the BASELINE (the calculation anyone could make) and than the forecast series alone (raw).
 
-In the exam months, with only what was known h months before (origin T − h), every forecast series
-with something due is predicted by three methods, on the same rows:
+In the exam months, with only what was known h months before (origin T − h), every forecast series with
+something due is predicted by four methods, on the same rows. They are the steps of a cascade: each one adds
+one piece of the framework to the one before.
 
-  raw          the forecast series alone, with its own history (no ladder): the technique of its
-               composition on its own monthly rates (the challenger if it cannot; its own level if it
-               has fewer than 3 months; its mandatory cell if it has none)
-  framework    as the forecast predicts it (prediction.py): the technique of its composition on the
-               composition's months, moved toward its credibility reference by (1 − z) × the difference
-               of levels known at the origin; a series with no composition: its mandatory cell
-  hoja_<grain> the spreadsheet: the rate of the last baseline_months closed months per grain
+  baseline     THE reference: the rate of its mandatory cell over the last baseline_months closed months known
+               at the origin (the portfolio's if the cell has none), × what falls due. No ladder, no credibility,
+               no technique, no marks. Every gain of the framework is measured against it, in USD.
+  raw          the forecast series alone, with its own history (no ladder): the technique of its composition on
+               its own monthly rates (the default technique if it cannot; its own level if it has fewer than 3
+               months; its mandatory cell if it has none). Not a step of the cascade: what a series says alone
+  por_defecto  the ladder and the credibility, with the DEFAULT technique for every composition: what the
+               support of the relatives is worth, before choosing techniques
+  framework    as the forecast predicts it (prediction.py): the technique CHOSEN for its composition and band,
+               moved toward its credibility reference by (1 − z) × the difference of levels known at the origin;
+               a series with no composition: its mandatory cell
+With maturation_dims, the honest exam of the marks adds the last step for the total (honesto).
+
+MONEY: every prediction is also in USD, predicted units × the price its real renewals had (renewed USD /
+renewed units of the series and month; without renewals, the AUV due × the uplift of the exam month). The price
+is the same for every method, so the USD differences are the differences of the rate: what predicting the rate
+better is worth in money. The gain of a method = the baseline's mean |error| of the monthly total in USD minus
+its own; and its consistency = the share of exam months × horizons in which it errs less than the baseline.
+
+WHAT IS NOT OUT OF SAMPLE: the structure (the ladder, the credibility k, the gates, the technique chosen per band
+and the error bands) is estimated with every closed month, the exam months included; for h ≥ 6 the choice of the
+technique has seen months after the origin. The framework's exam is therefore somewhat optimistic; the baseline
+and the series alone have no such advantage.
 
 Every prediction also carries the BINOMIAL NOISE of the real rate it tries to hit, √(p(1−p)/units due)
 with p its predicted rate: the error that even a perfect prediction would make (the noise rule: an error
@@ -31,7 +48,7 @@ Outputs:
 
 Actions (logged as they are done):
   1. the exam: the calendar, the forecast series with something due in the exam months
-  2. the three methods for every series, month and horizon (with the interval of raw and framework)
+  2. the four methods for every series, month and horizon (with the interval of raw, por_defecto and framework)
   3. the errors: per forecast series, and of the total per month
   4. check the exam                                               checks 1-4
   5. write the exam                                               checks 5-8
@@ -56,19 +73,21 @@ from prediction import (band_quantiles, index_history, levels_at_origins, months
 from report_queries import exam_by_month_query, exam_summary_query
 from step_14_backtest import band_of_horizon
 from techniques import CATALOGUE, logit
-from vocabulario import (CALENDAR_ROLE_COLUMN, COMPOSITION_ID_COLUMN, METHOD_FRAMEWORK, RATE_COLUMN, ROLE_TEST,
+from maturation import honest_total_exam
+from vocabulario import (CALENDAR_ROLE_COLUMN, COMPOSITION_ID_COLUMN, METHOD_BASELINE, METHOD_DEFAULT, METHOD_FRAMEWORK,
+                         RATE_COLUMN, ROLE_TEST,
                          SERIES_ID_COLUMN, SYNTHETIC_COLUMN, TABLE_PORTFOLIO_EXAM, TABLE_PORTFOLIO_EXAM_SUMMARY,
                          TABLE_SERIES_EXAM, TABLE_SERIES_EXAM_DETAIL, TRUTH_ROLES)
 
 
 STEP_LABEL = "19"
 STEP_NAME = "EXAM OF EVERY FORECAST SERIES"
-STEP_PURPOSE = ("predict every forecast series in the exam months, with only what was known h months before, three ways "
-                "on the same rows: alone with its own history (raw), as the framework does (composition and credibility) "
-                "and as the spreadsheet does; every prediction traced and with its interval, so the improvement over the "
-                "raw and over the spreadsheet can be measured series by series and summed")
+STEP_PURPOSE = ("predict every forecast series in the exam months, with only what was known h months before, four ways "
+                "on the same rows: the baseline (mandatory cell, last months), alone with its own history (raw), the "
+                "ladder with the default technique, and the framework; every prediction traced, in units and USD, so the "
+                "gain over the baseline can be measured in money, month by month, and summed")
 STEP_ACTIONS = ["the exam: the calendar, the forecast series with something due in the exam months",
-                "the three methods for every series, month and horizon (with the interval of raw and framework)",
+                "the four methods for every series, month and horizon (with the interval of raw, por_defecto and framework)",
                 "the errors: per forecast series, and of the total per month",
                 "check the exam (checks 1-4)",
                 "write the exam (checks 5-8)",
@@ -78,18 +97,20 @@ STEP_OUTPUT = ("every prediction of every forecast series, traced · the exam pe
                "per month · tables sff_series_exam_detail, sff_series_exam, sff_examen_cartera, sff_examen_cartera_resumen")
 
 METHOD_RAW = "raw"
+METHODS_IN_ORDER = [METHOD_BASELINE, METHOD_RAW, METHOD_DEFAULT, METHOD_FRAMEWORK]      # the order of the cascade (raw apart)
 
 
 def examine_series(rated_units: pd.DataFrame, series_estimate: pd.DataFrame, pool_series: pd.DataFrame,
-                   backtest: dict, configuration: Config, reference_members: pd.DataFrame = None) -> dict:
-    """The exam of every forecast series by the three methods.
+                   backtest: dict, configuration: Config, reference_members: pd.DataFrame = None,
+                   fine_table: pd.DataFrame = None) -> dict:
+    """The exam of every forecast series by the four methods.
 
     INPUT:   rated_units (step 08) · series_estimate (11: composition, z, reference) · the composition series
              (12) · the backtest (14: decision and error bands) · the members of every credibility reference (10).
     OUTPUT:  dict(detail, per_series, by_month, summary).
     RULES:   see the module header.
     EDGE CASES: a series with no composition (solo_historia, mixed) is predicted by its mandatory cell in the
-             framework; its raw method still uses its own history. The spreadsheet has no interval.
+             framework; its raw method still uses its own history. The baseline has no interval.
     """
     configuration.log_step_start(STEP_LABEL, STEP_NAME, STEP_PURPOSE, STEP_ACTIONS, STEP_OUTPUT)
     check_log = []
@@ -109,7 +130,7 @@ def examine_series(rated_units: pd.DataFrame, series_estimate: pd.DataFrame, poo
     configuration.log_action(STEP_LABEL, 1, f"exam months {exam_months[0]}..{exam_months[-1]} · {real[SERIES_ID_COLUMN].nunique():,} "
                                             f"forecast series · {len(real):,} series × month · horizons {configuration.backtest_horizons}")
 
-    # [2] the three methods
+    # [2] the four methods
     decision = backtest["decision"].set_index([COMPOSITION_ID_COLUMN, "tramo_h"])["tecnica"]
     composition_truth = pool_series[pool_series[CALENDAR_ROLE_COLUMN].isin(TRUTH_ROLES) & pool_series[RATE_COLUMN].notna()
                                     & (pool_series["vencen"] > 0)]
@@ -130,12 +151,16 @@ def examine_series(rated_units: pd.DataFrame, series_estimate: pd.DataFrame, poo
             rows.append(predict_month(month_rows, known, composition_index, series_index, reference_history, decision,
                                       origin, horizon, backtest["bands"], configuration))
     detail = pd.concat(rows, ignore_index=True)
-    methods = sorted(detail["method"].unique(), key=lambda method: (method != METHOD_RAW, method != METHOD_FRAMEWORK, method))
+    methods = [method for method in METHODS_IN_ORDER if method in set(detail["method"])]
     configuration.log_action(STEP_LABEL, 2, f"{len(detail):,} predictions · methods {methods}")
 
     # [3] the errors
     per_series = errors_per_series(detail, configuration)
     by_month, summary = errors_of_the_total(detail, methods, configuration)
+    honest = None
+    if configuration.maturation_dims and fine_table is not None:
+        honest = honest_total_exam(detail[detail["method"] == METHOD_FRAMEWORK], fine_table, configuration)
+        by_month, summary = add_the_honest_exam(by_month, summary, honest)
     configuration.log_action(STEP_LABEL, 3, "per method, all series: " + " · ".join(
         f"{method} WAPE {row['wape']:.1%}" + (f", {row['in_interval']:.0%} in the interval" if pd.notna(row["in_interval"]) else "")
         for method, row in overall_by_method(detail, configuration).iterrows()))
@@ -178,10 +203,89 @@ def examine_series(rated_units: pd.DataFrame, series_estimate: pd.DataFrame, poo
     configuration.log_action(STEP_LABEL, 7, "the methods on the same rows (error_total: of the sum of the portfolio; wape_series: "
                                             "series by series, no compensation):")
     configuration.show_table(summary)
+    show_the_cascade(summary, configuration)
+    if honest is not None:
+        show_the_honest_exam(honest, configuration)
     configuration.show_query(STEP_LABEL, "the exam per method and horizon", exam_summary_query(configuration))
     configuration.show_query(STEP_LABEL, "the total of every exam month per method (sff_examen_cartera)",
                              exam_by_month_query(configuration, methods))
     return dict(detail=detail, per_series=per_series, by_month=by_month, summary=summary)
+
+
+def show_the_cascade(summary: pd.DataFrame, configuration: Config) -> None:
+    """The cascade on screen: from the baseline, what every piece of the framework is worth, per horizon: the mean
+    |error| of the monthly total in USD, the gain over the baseline and in how many exam months it erred less."""
+    doc = configuration.logger.doc
+    cascade = summary[summary["metodo"].isin([METHOD_BASELINE, METHOD_DEFAULT, METHOD_FRAMEWORK])]
+    if cascade.empty or METHOD_BASELINE not in set(cascade["metodo"]):
+        return
+    doc(f"[{STEP_LABEL}] ══════════ LA CASCADA: DE LA BASELINE AL FRAMEWORK ══════════")
+    doc(f"[{STEP_LABEL}] baseline = su celda mandatory, últimos {configuration.baseline_months} meses · por_defecto = + escalera "
+        f"y credibilidad con la técnica por defecto ({configuration.default_technique}) · framework = + la técnica elegida. "
+        f"error_usd_medio: |error| medio del total de un mes en USD; ganancia_usd_mes: lo que se yerra menos que la baseline; "
+        f"meses_mejor_que_baseline: en cuántos meses de examen yerra menos")
+    shown = cascade[["h", "metodo", "error_total_medio", "error_usd_medio", "ganancia_usd_mes", "meses_mejor_que_baseline"]].copy()
+    configuration.show_table(shown.round({"error_total_medio": 4, "error_usd_medio": 0, "ganancia_usd_mes": 0,
+                                          "meses_mejor_que_baseline": 2}))
+    for horizon, block in cascade.groupby("h"):
+        rows = block.set_index("metodo")
+        if METHOD_FRAMEWORK not in rows.index:
+            continue
+        framework, baseline = rows.loc[METHOD_FRAMEWORK], rows.loc[METHOD_BASELINE]
+        consistent = framework["meses_mejor_que_baseline"]
+        doc(f"[{STEP_LABEL}] VALORACIÓN h = {horizon}: la baseline yerra el total de un mes en ${baseline['error_usd_medio']:,.0f} de media "
+            f"({baseline['error_total_medio']:.1%}); el framework en ${framework['error_usd_medio']:,.0f} ({framework['error_total_medio']:.1%}): "
+            + (f"${framework['ganancia_usd_mes']:,.0f} menos al mes" if framework['ganancia_usd_mes'] >= 0
+               else f"${-framework['ganancia_usd_mes']:,.0f} MÁS al mes que la baseline")
+            + f", mejor en el {consistent:.0%} de los meses de examen"
+            + (" (consistente)" if consistent >= 0.75 else " (NO consistente: gana algunos meses y pierde otros)" if consistent >= 0.5
+               else " (la baseline gana más meses)"))
+    doc(f"[{STEP_LABEL}] ══════════ FIN DE LA CASCADA ══════════")
+
+
+def add_the_honest_exam(by_month: pd.DataFrame, summary: pd.DataFrame, honest: pd.DataFrame) -> tuple:
+    """The honest exam next to the others: its predictions and errors in the table by month, and two rows of the
+    summary (framework_marcas_hoy: the marks seen at the origin and no curve; framework_honesto: with the curve)."""
+    columns = ["mes", "h", "marcas_hoy_pred", "marcas_hoy_error_total", "honesto_pred", "honesto_error_total"]
+    by_month = by_month.merge(honest[columns].rename(columns={
+        "marcas_hoy_pred": "framework_marcas_hoy_pred", "marcas_hoy_error_total": "framework_marcas_hoy_error_total",
+        "honesto_pred": "framework_honesto_pred", "honesto_error_total": "framework_honesto_error_total"}), on=["mes", "h"], how="left")
+    rows = []
+    for method, column in (("framework_marcas_hoy", "marcas_hoy_error_total"), ("framework_honesto", "honesto_error_total")):
+        for horizon, errors in honest.groupby("h")[column]:
+            rows.append({"metodo": method, "h": horizon, "error_total_medio": errors.abs().mean(),
+                         "sesgo_total_medio": errors.mean()})
+    summary = pd.concat([summary, pd.DataFrame(rows)], ignore_index=True)
+    return by_month, summary
+
+
+def show_the_honest_exam(honest: pd.DataFrame, configuration: Config) -> None:
+    """The honest exam on screen: the error of the total with the final marks (the ceiling), with the marks seen at
+    the origin, and with those plus the maturation curve, per horizon and month; with a VALORACIÓN line."""
+    doc = configuration.logger.doc
+    doc(f"[{STEP_LABEL}] ══════════ EXAMEN HONESTO DE LAS MARCAS ({', '.join(configuration.maturation_dims)}) ══════════")
+    doc(f"[{STEP_LABEL}] the total of every exam month predicted three ways with the same rates of the framework: with the "
+        f"FINAL marks (techo: what predicting the marks perfectly would give, the exam of always), with the marks as they "
+        f"were h months before (marcas_hoy) and with those plus the maturation curve known at the origin (honesto):")
+    without_columns = [mark for mark, sign in configuration.structural_timevarying_dims.items()
+                       if sign == "negative" and mark not in configuration.maturation_dims]
+    if without_columns:
+        doc(f"[{STEP_LABEL}] OJO: {', '.join(without_columns)} no trae(n) columnas de maduración: aquí siguen con su marca "
+            f"FINAL. El examen es honesto solo para {', '.join(configuration.maturation_dims)}; para las demás marcas "
+            f"sigue siendo el techo")
+    error_columns = ["techo_marcas_finales_error_total", "marcas_hoy_error_total", "honesto_error_total"]
+    shown = honest[["mes", "h", "renovadas_reales"] + error_columns].copy()
+    shown[error_columns] = shown[error_columns].round(4)
+    configuration.show_table(shown)
+    per_horizon = honest.groupby("h")[error_columns].agg(lambda errors: errors.abs().mean())
+    bias = honest.groupby("h")[error_columns].mean().add_suffix("_sesgo")
+    configuration.show_table(per_horizon.join(bias).round(4).reset_index())
+    for horizon, row in per_horizon.iterrows():
+        doc(f"[{STEP_LABEL}] VALORACIÓN h = {horizon}: the error of the total is {row['honesto_error_total']:.1%} honest, against "
+            f"{row['techo_marcas_finales_error_total']:.1%} with the final marks (the ceiling) and {row['marcas_hoy_error_total']:.1%} "
+            f"with the marks seen and no curve: predicting the marks is worth "
+            f"{row['honesto_error_total'] - row['techo_marcas_finales_error_total']:+.1%} of the total at this horizon")
+    doc(f"[{STEP_LABEL}] ══════════ FIN DEL EXAMEN HONESTO ══════════")
 
 
 def composition_history_index(composition_truth: pd.DataFrame, period: str) -> dict:
@@ -195,11 +299,14 @@ def composition_history_index(composition_truth: pd.DataFrame, period: str) -> d
 
 def series_history_index(closed: pd.DataFrame, period: str, due: str, renewed: str) -> dict:
     """The closed months of every forecast series (index_history), with units due and renewed and the
-    logit of its own rate per month (clipped as the raw method has always clipped it)."""
+    logit of its own rate per month. The monthly rate of a small series is often 0 or 1 (2 of 2 renewed): its logit
+    would be ±14 and one month would pull any average of logits far away, which is not the series' fault but the
+    method's. The rate is taken with the continuity correction (renewed + ½) / (due + 1), so a series alone is judged
+    by what its months say, not by the infinity of its 0 % and 100 %."""
     series_index = index_history(closed, SERIES_ID_COLUMN, period, [renewed, due])
     for entry in series_index.values():
         entry["renewed"], entry["due"] = entry[renewed], entry[due]
-        entry["rate_logit"] = logit(np.clip(entry["renewed"] / entry["due"], 1e-6, 1 - 1e-6))
+        entry["rate_logit"] = logit((entry["renewed"] + 0.5) / (entry["due"] + 1.0))
         entry["rate_logit"].flags.writeable = False
     return series_index
 
@@ -214,17 +321,20 @@ def predict_month(month_rows: pd.DataFrame, known: pd.DataFrame, composition_ind
     global_level = known[renewed].sum() / known[due].sum()
     month_rows = month_rows.assign(cell_level=month_rows["_cell"].map(cell_level).fillna(global_level))
 
-    # the framework: the composition's prediction, moved toward its reference (levels known at the origin)
-    composition_rate, composition_level, composition_technique = {}, {}, {}
+    # the framework: the composition's prediction, moved toward its reference (levels known at the origin); and the
+    # same with the default technique for every composition (por_defecto: the ladder without the technique choice)
+    composition_rate, composition_level, composition_technique, default_rate = {}, {}, {}, {}
     for composition_id in sorted(set(month_rows[COMPOSITION_ID_COLUMN].dropna())):
         entry = composition_index.get(composition_id)
         months_at_origin = months_known(entry, origin) if entry is not None else 0
         if months_at_origin < configuration.exam_min_months_to_predict:
             continue
-        technique = decision.get((composition_id, band_name), configuration.challenger_technique)
+        technique = decision.get((composition_id, band_name), configuration.default_technique)
         technique, rate = predict_composition(entry["rate_logit"][:months_at_origin], entry["month"][:months_at_origin],
-                                              technique, horizon, configuration.challenger_technique)
+                                              technique, horizon, configuration.default_technique)
         composition_rate[composition_id], composition_technique[composition_id] = rate, technique
+        _, default_rate[composition_id] = predict_composition(entry["rate_logit"][:months_at_origin], entry["month"][:months_at_origin],
+                                                              configuration.default_technique, horizon, configuration.default_technique)
         composition_level[composition_id] = (entry["renovadas"][:months_at_origin].sum()
                                              / entry["vencen"][:months_at_origin].sum())
     reference_level = levels_at_origins(reference_history, "credibility_ref_id",
@@ -240,6 +350,15 @@ def predict_month(month_rows: pd.DataFrame, known: pd.DataFrame, composition_ind
     framework["credibility_shift_logit"] = shift
     framework["pred_rate"] = np.where(np.isfinite(rate), rate, framework["cell_level"])
     framework["technique"] = framework["technique"].fillna("mandatory_cell")
+    with_default = month_rows.copy()
+    with_default["method"] = METHOD_DEFAULT
+    with_default["composition_rate"] = with_default[COMPOSITION_ID_COLUMN].map(default_rate)
+    with_default["technique"] = np.where(with_default["composition_rate"].notna(), configuration.default_technique, "mandatory_cell")
+    rate, shift = shifted_rate(with_default["composition_rate"], with_default["z"],
+                               with_default["credibility_ref_id"].map(reference_level),
+                               with_default[COMPOSITION_ID_COLUMN].map(composition_level), configuration.apply_credibility_shift)
+    with_default["credibility_shift_logit"] = shift
+    with_default["pred_rate"] = np.where(np.isfinite(rate), rate, with_default["cell_level"])
 
     # raw: the forecast series alone, with its own months
     own_rate, own_technique = {}, {}
@@ -254,11 +373,11 @@ def predict_month(month_rows: pd.DataFrame, known: pd.DataFrame, composition_ind
             own_rate[series_id] = entry["renewed"][:months_at_origin].sum() / entry["due"][:months_at_origin].sum()
             own_technique[series_id] = "own_level"
             continue
-        technique = decision.get((composition_id, band_name), configuration.challenger_technique)
+        technique = decision.get((composition_id, band_name), configuration.default_technique)
         if months_at_origin < int(CATALOGUE.get(technique, (None, None, None, 1))[3]):
-            technique = configuration.challenger_technique
+            technique = configuration.default_technique
         technique, rate = predict_composition(entry["rate_logit"][:months_at_origin], entry["month"][:months_at_origin],
-                                              technique, horizon, configuration.challenger_technique)
+                                              technique, horizon, configuration.default_technique)
         own_rate[series_id], own_technique[series_id] = rate, technique
     raw = month_rows.copy()
     raw["method"] = METHOD_RAW
@@ -267,36 +386,38 @@ def predict_month(month_rows: pd.DataFrame, known: pd.DataFrame, composition_ind
     raw["credibility_shift_logit"] = 0.0
     raw["pred_rate"] = raw[SERIES_ID_COLUMN].map(own_rate).fillna(raw["cell_level"])
 
-    # the interval of raw and framework, as the forecast builds its band
-    for frame in (raw, framework):
+    # the interval of raw, por_defecto and framework, as the forecast builds its band
+    for frame in (raw, with_default, framework):
         q_low, q_high = band_quantiles(bands, frame["technique"], frame["h"], configuration)
         frame["band_low"], frame["band_high"] = rate_band(frame["pred_rate"], frame[due], q_low, q_high)
 
-    # the spreadsheet, for every grain (no interval)
-    spreadsheets = []
+    # the baseline: the mandatory cell over the last baseline_months closed months known at the origin (no interval)
     window = known[known[period] > origin - configuration.baseline_months]
-    window_global = window[renewed].sum() / window[due].sum()
-    for grain in configuration.baseline_grains:
-        sheet = month_rows.copy()
-        sheet["method"], sheet["technique"] = f"hoja_{grain}", f"last {configuration.baseline_months} months"
-        if grain == "global":
-            sheet["pred_rate"] = window_global
-        else:
-            columns = configuration.business_mandatory_dims if grain == "mandatory" else grain.split("+")
-            keys = join_columns(window, columns)
-            grain_rate = window.groupby(keys)[renewed].sum() / window.groupby(keys)[due].sum()
-            sheet["pred_rate"] = join_columns(sheet, columns).map(grain_rate).fillna(window_global).to_numpy(dtype=float)
-        sheet["composition_rate"], sheet["credibility_shift_logit"] = np.nan, 0.0
-        sheet["band_low"], sheet["band_high"] = np.nan, np.nan
-        spreadsheets.append(sheet)
+    window_rate = window[renewed].sum() / window[due].sum() if window[due].sum() > 0 else global_level
+    cell_window_rate = window.groupby("_cell")[renewed].sum() / window.groupby("_cell")[due].sum().where(lambda value: value > 0)
+    baseline = month_rows.copy()
+    baseline["method"], baseline["technique"] = METHOD_BASELINE, f"last {configuration.baseline_months} months of its cell"
+    baseline["pred_rate"] = baseline["_cell"].map(cell_window_rate).fillna(window_rate).to_numpy(dtype=float)
+    baseline["composition_rate"], baseline["credibility_shift_logit"] = np.nan, 0.0
+    baseline["band_low"], baseline["band_high"] = np.nan, np.nan
 
-    predictions = pd.concat([raw, framework] + spreadsheets, ignore_index=True)
+    predictions = pd.concat([baseline, raw, with_default, framework], ignore_index=True)
     predictions["due_units"] = predictions[due]
     predictions["real_units"] = predictions[renewed]
     predictions["real_rate"] = predictions["real_units"] / predictions["due_units"]
     predictions["pred_units"] = predictions["pred_rate"] * predictions["due_units"]
     predictions["err_units"] = predictions["pred_units"] - predictions["real_units"]
     predictions["err_pp"] = 100 * (predictions["pred_rate"] - predictions["real_rate"])
+    # the money: the same price for every method (the one its real renewals had), so USD differences are rate differences
+    usd_due, usd_renewed = configuration.pipeline_usd_col, configuration.renewed_usd_col
+    renewed_usd = predictions[usd_renewed].fillna(0.0)
+    renewers_due_value = (predictions["real_units"] * predictions[usd_due] / predictions["due_units"]).sum()
+    month_uplift = renewed_usd.sum() / renewers_due_value if renewers_due_value > 0 else 1.0
+    price = np.where(predictions["real_units"] > 0, renewed_usd / predictions["real_units"].where(predictions["real_units"] > 0),
+                     predictions[usd_due] / predictions["due_units"] * month_uplift)
+    predictions["real_usd"] = renewed_usd
+    predictions["pred_usd"] = predictions["pred_units"] * price
+    predictions["err_usd"] = predictions["pred_usd"] - predictions["real_usd"]
     # the noise of the rate it tries to hit: what even a perfect prediction would miss by
     predictions["noise_pp"] = 100 * np.sqrt(np.clip(predictions["pred_rate"] * (1 - predictions["pred_rate"]), 0, None)
                                             / predictions["due_units"].clip(lower=1))
@@ -305,7 +426,8 @@ def predict_month(month_rows: pd.DataFrame, known: pd.DataFrame, composition_ind
                                                      & (predictions["real_rate"] <= predictions["band_high"] + 1e-12)).astype(float), np.nan)
     return predictions[[SERIES_ID_COLUMN, COMPOSITION_ID_COLUMN, period, "h", "tramo_h", "origin", "method", "technique",
                         "composition_rate", "credibility_shift_logit", "pred_rate", "band_low", "band_high", "real_rate",
-                        "due_units", "pred_units", "real_units", "err_units", "err_pp", "noise_pp", "in_band"]]
+                        "due_units", "pred_units", "real_units", "err_units", "err_pp", "noise_pp", "in_band",
+                        "pred_usd", "real_usd", "err_usd"]]
 
 
 def errors_per_series(detail: pd.DataFrame, configuration: Config) -> pd.DataFrame:
@@ -339,27 +461,41 @@ def overall_by_method(detail: pd.DataFrame, configuration: Config) -> pd.DataFra
 
 
 def errors_of_the_total(detail: pd.DataFrame, methods: list, configuration: Config) -> tuple:
-    """By month and horizon: real, predicted and error of the total per method; the summary per method."""
+    """By month and horizon: real, predicted and error of the total per method, in units and USD; the summary per
+    method and horizon, with the gain over the baseline in USD and its consistency."""
     period = configuration.period_col
     month_rows, summary_rows = [], []
     for (target_month, horizon), block in detail.groupby([period, "h"]):
-        real_units = block.loc[block["method"] == methods[0], "real_units"].sum()
-        row = {"mes": target_month, "h": horizon, "renovadas_reales": real_units}
+        first = block[block["method"] == methods[0]]
+        real_units, real_usd = first["real_units"].sum(), first["real_usd"].sum()
+        row = {"mes": target_month, "h": horizon, "renovadas_reales": real_units, "renovado_usd_real": real_usd}
         for method in methods:
-            predicted = block.loc[block["method"] == method, "pred_units"].sum()
-            row[f"{method}_pred"] = predicted
-            row[f"{method}_error_total"] = (predicted - real_units) / real_units
+            rows = block[block["method"] == method]
+            row[f"{method}_pred"] = rows["pred_units"].sum()
+            row[f"{method}_error_total"] = (row[f"{method}_pred"] - real_units) / real_units
+            row[f"{method}_pred_usd"] = rows["pred_usd"].sum()
+            row[f"{method}_error_usd"] = row[f"{method}_pred_usd"] - real_usd
         month_rows.append(row)
     by_month = pd.DataFrame(month_rows)
     for horizon in sorted(detail["h"].unique()):
         block = detail[detail["h"] == horizon]
+        months = by_month[by_month["h"] == horizon]
+        baseline_abs_usd = months[f"{METHOD_BASELINE}_error_usd"].abs() if METHOD_BASELINE in methods else None
         for method in methods:
-            month_errors = by_month.loc[by_month["h"] == horizon, f"{method}_error_total"]
+            month_errors = months[f"{method}_error_total"]
+            abs_usd = months[f"{method}_error_usd"].abs()
             rows = block[block["method"] == method]
             summary_rows.append({"metodo": method, "h": horizon, "error_total_medio": float(month_errors.abs().mean()),
                                  "sesgo_total_medio": float(month_errors.mean()),
+                                 "error_usd_medio": float(abs_usd.mean()),
+                                 "ganancia_usd_mes": float(baseline_abs_usd.mean() - abs_usd.mean()) if baseline_abs_usd is not None else np.nan,
+                                 "meses_mejor_que_baseline": float((abs_usd < baseline_abs_usd).mean())
+                                                             if baseline_abs_usd is not None and method != METHOD_BASELINE else np.nan,
                                  "wape_series": float(rows["err_units"].abs().sum() / rows["real_units"].sum()),
                                  "error_vs_ruido": float(np.sqrt((rows["err_pp"] ** 2).mean()) / np.sqrt((rows["noise_pp"] ** 2).mean()))
                                                    if (rows["noise_pp"] > 0).any() else np.nan,
                                  "en_intervalo": float(rows["in_band"].mean()) if rows["in_band"].notna().any() else np.nan})
-    return by_month, pd.DataFrame(summary_rows).sort_values(["h", "error_total_medio"]).reset_index(drop=True)
+    order = {method: position for position, method in enumerate(methods)}
+    summary = pd.DataFrame(summary_rows)
+    summary["_orden"] = summary["metodo"].map(order)
+    return by_month, summary.sort_values(["h", "_orden"]).drop(columns="_orden").reset_index(drop=True)

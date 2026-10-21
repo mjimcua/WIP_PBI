@@ -3,6 +3,8 @@ main.py — Runs SFF on the production extract, or on the synthetic raw.
 
     python main.py              # the production extract (SQL Server)
     python main.py sintetico    # the synthetic raw of the tests
+    python main.py parecido     # the synthetic that looks like production (synthetic_real.py), current month 2026-09
+    python main.py parecido 2026-10    # the same, with another current month
 
 The Config is declared here and only here: its columns, its calendar and where the raw
 comes from. Each step adds one line to run().
@@ -27,6 +29,10 @@ RAW_EXTRACT_QUERY = "SELECT * FROM ..."     # [por completar] the query of the r
 SYNTHETIC_KEYWORD = "sintetico"
 SYNTHETIC_OUTPUT_FOLDER = "salida"
 SYNTHETIC_DATABASE = os.path.join(SYNTHETIC_OUTPUT_FOLDER, "sff_sintetico.db")
+LIKE_REAL_KEYWORD = "parecido"                     # python main.py parecido [2026-10]: the synthetic that looks like production
+LIKE_REAL_DATABASE = os.path.join(SYNTHETIC_OUTPUT_FOLDER, "sff_parecido.db")
+LIKE_REAL_LEVELS = os.path.join(SYNTHETIC_OUTPUT_FOLDER, "sff_levels_parecido.json")
+LIKE_REAL_SEED = 11
 
 
 # ═══════════════════════════════════════════════════════════════════════════════════
@@ -53,6 +59,12 @@ class SyntheticConfig(Config):
         return build_raw(7, with_discount_pct=True)
 
 
+class LikeRealConfig(Config):
+    def read_raw(self) -> pd.DataFrame:
+        from synthetic_real import build_raw_like_real
+        return build_raw_like_real(seed=LIKE_REAL_SEED)
+
+
 def production_configuration() -> Config:
     """The production extract, as seen in the runs of 29-sep. Names marked [por confirmar]
     must be checked against it: step 00 names every column that is missing or has no role."""
@@ -73,6 +85,9 @@ def production_configuration() -> Config:
         leveled_dims={"tr_term": "ordinal", "tr_band": "ordinal"},
         structural_timevarying_dims={"dormant": "negative", "softcancel": "negative",
                                      "not_installed": "negative"},            # [por confirmar] the signs
+        # the marks whose extract says WHEN they were set (<mark>_month_0 … <mark>_month_12, the units marked k months
+        # before due): ["softcancel"] as soon as the extract carries its columns; step 00 fails if they are missing
+        maturation_dims=[],
         extra_renovacion=["net_new", "prev_OperationGroup"],
         extra_revalorizacion=["price_cap", "msrp_increased"],
         # the discount: ONE column, both sides (the bucket is derived with the default edges,
@@ -158,6 +173,53 @@ def synthetic_configuration() -> Config:
     )
 
 
+def like_real_configuration(current_month: str = "2026-09") -> Config:
+    """The synthetic that looks like the production extract (synthetic_real.py): the production columns and
+    the Config of the run of 19-oct-2026 (exam of 6 months, uplift window of 12 months without increases).
+    Its tables go to a SQLite file in salida/; compare_with_real.py puts its numbers next to the real ones."""
+    os.makedirs(SYNTHETIC_OUTPUT_FOLDER, exist_ok=True)
+    return LikeRealConfig(
+        sql_engine=create_engine(f"sqlite:///{LIKE_REAL_DATABASE}"),
+        current_month=current_month,
+        test_months=6,
+        business_mandatory_dims=["tr_regional_level_1", "tr_regional_level_2", "tr_regional_level_3",
+                                 "tr_product_level_1", "tr_product_level_2", "tr_renewal_type", "tr_term", "tr_band",
+                                 "tr_master_partner_code"],
+        leveled_dims={"tr_term": "ordinal", "tr_band": "ordinal"},
+        levels_path=LIKE_REAL_LEVELS,
+        structural_timevarying_dims={"dormant": "negative", "softcancel": "negative", "not_installed": "negative"},
+        # the synthetic says WHEN every softcancel was set: softcancel_month_0 … softcancel_month_12
+        maturation_dims=["softcancel"],
+        extra_renovacion=["net_new", "prev_OperationGroup"],
+        discount_value_column="discount",
+        sku_column="sku",
+        extra_measure_cols=["total_reacquired_units", "total_reacquired_usd"],
+        renewed_pipeline_usd_col="total_tr_usd_renewed",
+        isolated_renewed_units_col="total_renewed_units_without_softcancel",
+        isolated_renewed_usd_col="total_renewed_usd_without_softcancel",
+        isolated_renewed_pipeline_usd_col="total_tr_usd_renewed_without_softcancel",
+        isolated_renewed_usd_sq_over_tr_col="total_renewed_usd_sq_over_tr_isolated",
+        isolated_tr_usd_renewed_lt095_col="total_tr_usd_renewed_isolated_lt095",
+        isolated_tr_usd_renewed_095_100_col="total_tr_usd_renewed_isolated_095_100",
+        isolated_tr_usd_renewed_100_105_col="total_tr_usd_renewed_isolated_100_105",
+        isolated_tr_usd_renewed_105_110_col="total_tr_usd_renewed_isolated_105_110",
+        isolated_tr_usd_renewed_110_120_col="total_tr_usd_renewed_isolated_110_120",
+        isolated_tr_usd_renewed_ge120_col="total_tr_usd_renewed_isolated_ge120",
+        ignore_cols=["dummy_field", "_filter2", "total_tr_units_without_softcancel"],
+        term_column="tr_term",
+        one_year_term_value="1 year",
+        acquisition_column="net_new",
+        acquisition_values=["Acquisition_Not-New", "Acquisition_Pure-New"],
+        renewed_acquisition_value="Retention_Not-New",
+        dims_after_renewal={"prev_OperationGroup": "Renewal"},
+        price_group_dims=["tr_regional_level_1", "tr_regional_level_2", "tr_regional_level_3", "tr_product_level_1"],
+        uplift_window_months=12,
+        uplift_without_increases=True,
+        acquisition_discount=0.4,
+        ts_region_columns=["tr_regional_level_1", "tr_regional_level_2", "tr_regional_level_3"],
+    )
+
+
 # ═══════════════════════════════════════════════════════════════════════════════════
 # THE RUN
 # ═══════════════════════════════════════════════════════════════════════════════════
@@ -168,6 +230,13 @@ def run(configuration: Config) -> dict:
 
 
 if __name__ == "__main__":
-    # python main.py [sintetico]
-    configuration = synthetic_configuration() if SYNTHETIC_KEYWORD in sys.argv[1:] else production_configuration()
+    # python main.py [sintetico | parecido [YYYY-MM]]
+    arguments = sys.argv[1:]
+    if SYNTHETIC_KEYWORD in arguments:
+        configuration = synthetic_configuration()
+    elif LIKE_REAL_KEYWORD in arguments:
+        months_given = [argument for argument in arguments if argument != LIKE_REAL_KEYWORD]
+        configuration = like_real_configuration(*months_given[:1])
+    else:
+        configuration = production_configuration()
     run(configuration)

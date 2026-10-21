@@ -225,8 +225,8 @@ def test_the_merge_threshold_and_its_evidence() -> None:
     console = console_of(lambda: run(synthetic_with(leveled_dims={"product": "nominal"}, levels_path=configuration.levels_path,
                                                     level_merge_max_pp=20)))
     check("generating ['product']" in console, "a JSON made with another threshold is generated again")
-    check("ONE group" in console and "no variation, not a pass of the ladder: ['product_level_1']" in console,
-          "a dimension that ends in one group is told on screen and gets no pass of the ladder")
+    check("ONE group" in console and "no variation, collapsed last by step 10 (its pass merges nothing): ['product_level_1']" in console,
+          "a dimension that ends in one group is told on screen: it collapses last and its pass merges nothing")
 
 
 def test_the_extra_renewal_measure() -> None:

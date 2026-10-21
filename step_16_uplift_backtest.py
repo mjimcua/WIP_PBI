@@ -1,6 +1,7 @@
 """
 step_16_uplift_backtest.py — Which uplift predicts the price of the renewals better:
-the statistical one of the cell or the contract rule 1 / (1 − discount)?
+the statistical one of the cell or the contract rule 1 / (1 − discount), on every row with a known discount
+or only on the neutral ones?
 
 HOW THE TEST WORKS:
   · the statistical uplift of every cell is estimated ONLY with the renewals of the months
@@ -14,14 +15,20 @@ HOW THE TEST WORKS:
     the real rate is given):
         statistical   renewed units × pipeline AUV × uplift of its cell
         contract      renewed units × pipeline AUV × 1 / (1 − discount)   (known discount only)
+        contract on the neutral rows   the contract on the rows without a negative mark (the typical
+                      renewal the rule speaks of), the statistical one on the marked rows
+    The discount is measured against the MSRP of the contract at expiry: the rule already carries the
+    increases between the purchase and the expiry, so the contract paths take no increase factor.
     The base is the row's average price, NOT the exact value of the renewers that step 15 uses
     to ESTIMATE the uplift: the forecast cannot know who will renew, so it values them at the
     row's average, and the test must judge that. Where renewers were worth more than the
     average (sff_uplift_homogeneidad), the error shows up here, as it will in the forecast.
   · both are compared on the SAME rows (the ones with a known discount): WAPE = Σ|predicted −
     real| / Σ real, and the bias of the total = (Σ predicted − Σ real) / Σ real;
-  · VERDICT: the contract path is used in the forecast, where the discount is known, only if
-    its WAPE is lower. Otherwise the statistical path is used everywhere. The verdict governs.
+  · VERDICT: the path with the lowest WAPE on the rows with a known discount is the one the forecast
+    uses there (the statistical one on a tie). The verdict governs. The same comparison is shown for the
+    neutral and the marked rows, and for the rows with and without an increase in its cycle (an increase
+    counted twice shows up as a statistical path that is high only with an increase).
 The rows with an unknown discount are measured too (statistical only): they always take it.
 
 THE WAYS OF ESTIMATING THE STATISTICAL UPLIFT, side by side in the same exam (on screen): all the
@@ -52,10 +59,10 @@ table sff_backtest_uplift.
 import numpy as np
 import pandas as pd
 
-from config import Config
+from config import Config, has_no_negative_mark
 from price_increases import active_increases, increase_factor, price_group_columns, price_group_of
-from step_15_uplift import estimate_cell_uplifts, price_increases_as_of, renewer_rows, uplift_history
-from vocabulario import (CALENDAR_ROLE_COLUMN, PATH_CONTRACT, PATH_STATISTICAL, ROLE_TEST, TABLE_UPLIFT_BACKTEST,
+from step_15_uplift import contract_rule, estimate_cell_uplifts, price_increases_as_of, renewer_rows, uplift_history
+from vocabulario import (CALENDAR_ROLE_COLUMN, PATH_CONTRACT, PATH_CONTRACT_NEUTRAL, PATH_STATISTICAL, ROLE_TEST, TABLE_UPLIFT_BACKTEST,
                          UPLIFT_CELL_ID_COLUMN)
 
 
@@ -63,7 +70,8 @@ from vocabulario import (CALENDAR_ROLE_COLUMN, PATH_CONTRACT, PATH_STATISTICAL, 
 STEP_LABEL = "16"
 STEP_NAME = "BACKTEST OF THE UPLIFT"
 STEP_PURPOSE = ("decide, in the exam months, which uplift predicts the price of the renewals better where the discount "
-                "is known: the statistical one of the cell (estimated before the exam) or the contract rule 1 / (1 − d); "
+                "is known: the statistical one of the cell (estimated before the exam), the contract rule 1 / (1 − d), or "
+                "the contract on the neutral rows and the statistical one on the marked; "
                 "the verdict governs the forecast")
 STEP_ACTIONS = ["the price increases known before the exam; the statistical uplift estimated with the months before "
                 "the exam, every way (all the history, the window, the window without increases)",
@@ -114,22 +122,32 @@ def backtest_uplift(fine_table: pd.DataFrame, configuration: Config) -> tuple:
             prediction = prediction * increase_factor(exam_groups, exam_rows[configuration.period_col], estimate["increases"])
         exam_rows["pred_forma_" + label] = prediction
     exam_rows["pred_" + PATH_STATISTICAL] = exam_rows["pred_forma_" + configured_label]
+    # which exam rows renew inside the cycle of an increase (to see whether the increase is counted twice: the
+    # discount of the extract is measured against the MSRP at expiry, so it already carries the increase)
+    configured_increases = estimates[configured_label]["increases"]
+    exam_rows["_con_subida"] = (np.asarray(increase_factor(exam_groups, exam_rows[configuration.period_col], configured_increases)) > 1.0
+                                if len(configured_increases) else False)
     discount = configuration.discount_value_column
     known = exam_rows[discount].notna() if discount else pd.Series(False, index=exam_rows.index)
-    exam_rows["pred_" + PATH_CONTRACT] = np.where(known, forecast_base / (1 - exam_rows[discount].clip(upper=configuration.contract_discount_cap))
-                                                  if discount else np.nan, np.nan)
-    configuration.log_action(STEP_LABEL, 2, f"{len(exam_rows):,} renewer rows in the exam; {int(known.sum()):,} with a known discount")
+    exam_rows["pred_" + PATH_CONTRACT] = (np.where(known, forecast_base * contract_rule(exam_rows[discount], configuration), np.nan)
+                                          if discount else np.nan)
+    # the contract on the neutral renewals (no negative mark: the typical renewal the rule speaks of), the statistical
+    # uplift on the marked ones (softcancel, dormant…: offers and changes the rule does not see)
+    exam_rows["_neutra"] = has_no_negative_mark(exam_rows, configuration)
+    exam_rows["pred_" + PATH_CONTRACT_NEUTRAL] = np.where(known & exam_rows["_neutra"], exam_rows["pred_" + PATH_CONTRACT],
+                                                          np.where(known, exam_rows["pred_" + PATH_STATISTICAL], np.nan))
+    configuration.log_action(STEP_LABEL, 2, f"{len(exam_rows):,} renewer rows in the exam; {int(known.sum()):,} with a known discount, "
+                                            f"{int((known & exam_rows['_neutra']).sum()):,} of them neutral (no negative mark)")
 
     # [3] the error of each path, and the verdict
     comparison = compare_paths(exam_rows, known, configuration)
-    known_rows = comparison[comparison["filas"] == "descuento conocido"].set_index("via")
-    contract_wins = (PATH_CONTRACT in known_rows.index and PATH_STATISTICAL in known_rows.index
-                     and known_rows.loc[PATH_CONTRACT, "wape"] < known_rows.loc[PATH_STATISTICAL, "wape"])
-    verdict = {"via_contrato_gana": bool(contract_wins),
-               "via_usada_con_descuento": PATH_CONTRACT if contract_wins else PATH_STATISTICAL}
-    configuration.log_action(STEP_LABEL, 3, f"verdict: where the discount is known the forecast uses the "
-                                            f"{verdict['via_usada_con_descuento'].upper()} path "
-                                            f"({'it predicts the exam renewals better' if contract_wins else 'the contract rule does not beat the statistical uplift'})")
+    # the path with the lowest WAPE on the rows with a known discount; the statistical one on a tie
+    known_rows = comparison[comparison["filas"] == "descuento conocido"].set_index("via")["wape"]
+    chosen = min((path for path in (PATH_STATISTICAL, PATH_CONTRACT, PATH_CONTRACT_NEUTRAL) if path in known_rows.index),
+                 key=lambda path: (known_rows[path], path != PATH_STATISTICAL), default=PATH_STATISTICAL)
+    verdict = {"via_contrato_gana": chosen != PATH_STATISTICAL, "via_usada_con_descuento": chosen}
+    configuration.log_action(STEP_LABEL, 3, f"verdict: where the discount is known the forecast uses the {chosen.upper()} path "
+                                            f"(WAPE " + " · ".join(f"{path} {known_rows[path]:.1%}" for path in known_rows.index) + ")")
 
     # [4] the checks
     configuration.log_action(STEP_LABEL, 4, "checking the test")
@@ -155,8 +173,26 @@ def backtest_uplift(fine_table: pd.DataFrame, configuration: Config) -> tuple:
     configuration.log_action(STEP_LABEL, 7, "the price of the exam renewals predicted by each path (wape: Σ|pred − real| / "
                                             "Σ real; sesgo: (Σ pred − Σ real) / Σ real):")
     configuration.show_table(comparison)
+    show_the_double_count(comparison, configuration)
     show_statistical_ways(exam_rows, known, list(estimates), configured_label, configuration)
     return comparison, verdict
+
+
+def show_the_double_count(comparison: pd.DataFrame, configuration: Config) -> None:
+    """VALORACIÓN of the split by increase: the bias of each path with an increase in its cycle minus the one without.
+    The statistical path counts the increase twice when its gap is clearly positive and the contract one's is not."""
+    by_label = comparison.set_index(["filas", "via"])["sesgo"]
+    try:
+        gaps = {path: float(by_label[("conocido · con subida en ciclo", path)] - by_label[("conocido · sin subida", path)])
+                for path in (PATH_STATISTICAL, PATH_CONTRACT)}
+    except KeyError:
+        return
+    doc = configuration.logger.doc
+    doc(f"[{STEP_LABEL}] VALORACIÓN de las subidas: bias with an increase minus without — statistical "
+        f"{gaps[PATH_STATISTICAL]:+.1%}, contract {gaps[PATH_CONTRACT]:+.1%}: "
+        + ("the statistical path counts the increase twice on the rows with a known discount (the discount already "
+           "carries it)" if gaps[PATH_STATISTICAL] > 0.02 and gaps[PATH_STATISTICAL] - gaps[PATH_CONTRACT] > 0.02
+           else "no double count of the increases"))
 
 
 def statistical_ways(configuration: Config) -> dict:
@@ -221,7 +257,21 @@ def compare_paths(exam_rows: pd.DataFrame, known: pd.Series, configuration: Conf
                      "usd_pred": predicted[valid].sum(),
                      "wape": float((predicted[valid] - real[valid]).abs().sum() / real[valid].sum()),
                      "sesgo": float((predicted[valid].sum() - real[valid].sum()) / real[valid].sum())})
-    for path in (PATH_STATISTICAL, PATH_CONTRACT):
+    for path in (PATH_STATISTICAL, PATH_CONTRACT, PATH_CONTRACT_NEUTRAL):
         measure(exam_rows[known], path, "descuento conocido")
     measure(exam_rows[~known], PATH_STATISTICAL, "descuento desconocido")
+    # the known discount split by the marks: does the rule hold on the neutral renewals and fail on the marked ones?
+    if "_neutra" in exam_rows.columns:
+        for label, neutral in (("conocido · neutras", True), ("conocido · con marca", False)):
+            subset = exam_rows[known & (exam_rows["_neutra"] == neutral)]
+            for path in (PATH_STATISTICAL, PATH_CONTRACT):
+                measure(subset, path, label)
+    # the known discount split by an increase in its cycle: the contract path takes the increase from the discount,
+    # the statistical one multiplies its cell by the factor; if the statistical path is high only with an increase,
+    # the increase is counted twice (once in the bucket of the discount, once in the factor)
+    if "_con_subida" in exam_rows.columns:
+        for label, with_increase in (("conocido · con subida en ciclo", True), ("conocido · sin subida", False)):
+            subset = exam_rows[known & (exam_rows["_con_subida"] == with_increase)]
+            for path in (PATH_STATISTICAL, PATH_CONTRACT):
+                measure(subset, path, label)
     return pd.DataFrame(rows)

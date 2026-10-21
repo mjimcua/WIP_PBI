@@ -47,14 +47,15 @@ def test_the_calendar_lands_on_every_row() -> None:
     check(set(calendared.loc[current_rows, "period"].astype(str)) == {"2026-09"}, "only 2026-09 is the current month")
     check(len(calendared) == len(raw) and list(calendared.columns[:len(raw.columns)]) == list(raw.columns),
           "no row lost, the raw's columns first and in order")
-    check(count_status(console, "ok") == 10 and "10 checks: 10 ok" in console, "the 10 checks pass and are logged")
-    calendar_table = pd.read_sql("SELECT * FROM sff_calendario", configuration.sql_engine)
-    check(len(calendar_table) == 48 and calendar_table.loc[calendar_table["period"] == "2026-09", "rol"].item() == ROLE_PROJECTION
-          and calendar_table.loc[calendar_table["period"] == "2026-09", "es_mes_en_curso"].item() == 1,
-          "sff_calendario: 48 months, 2026-09 is proyeccion and the current month")
-    september = calendar_table[calendar_table["period"] == "2026-09"].iloc[0]
-    check(pd.isna(september["unidades_renovadas"]) and september["s0_renovados_unidades"] > 0,
-          "sff_calendario keeps what the raw had booked (s0_) next to the wiped renewal")
+    check(count_status(console, "ok") == 9 and "9 checks: 9 ok" in console, "the 9 checks pass and are logged")
+    september = calendared[calendared["period"].astype(str) == "2026-09"]
+    check(calendared["period"].nunique() == 48 and (september["rol"] == ROLE_PROJECTION).all()
+          and (september["es_mes_en_curso"] == 1).all(),
+          "48 months, 2026-09 is proyeccion and the current month")
+    check(september["total_renewed_units"].isna().all() and september["s0_renovados_unidades"].sum() > 0,
+          "the raw's bookings stay in s0_ next to the wiped renewal")
+    check("the calendar per month" in console and "sff_calendario" not in console,
+          "the calendar per month is a printed query, not a table")
     check("actions:" in console and "output:" in console and "▸ 4." in console,
           "the step logs its actions and its output, and each action when it is done")
 
@@ -112,7 +113,7 @@ def test_pipeline_not_known_yet() -> None:
     check((calendared.loc[wiped, "total_tr_usd"] == 0).all() and (calendared.loc[wiped, "s0_vencen_usd"] > 0).all(),
           "due 2027-09 (sold or renewed in 2026-09, the current month): pipeline 0, the raw's value kept in s0_vencen_usd")
     check((calendared.loc[kept, "total_tr_usd"] > 0).all(), "due 2027-08 (sold or renewed in 2026-08, closed): kept")
-    check("10 checks: 10 ok" in console, "the checks pass with the wipe")
+    check("9 checks: 9 ok" in console, "the checks pass with the wipe")
 
 
 if __name__ == "__main__":

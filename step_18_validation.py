@@ -33,7 +33,6 @@ Output: the validation (one row per check) · table sff_validacion.
 """
 
 # ─── imports ─────────────────────────────────────────────────────────────────────
-import numpy as np
 import pandas as pd
 
 from config import Config

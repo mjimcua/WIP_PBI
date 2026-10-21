@@ -11,7 +11,7 @@ SQL Server and SQLite both run (the tests run every query on SQLite and compare 
 
   new_rows_query          step 21  the rows the framework adds or wipes, month × origin   ← sff_nucleo
   roles_query             step 02  the calendar per role                                 ← sff_nucleo
-  calendar_query          step 02  the calendar per month (sff_calendario)               ← sff_nucleo
+  calendar_query          step 02  the calendar per month                                ← sff_nucleo
   forecast_total_query    step 20  the total per year and origin (sff_forecast_total)    ← sff_nucleo
   exam_by_month_query     step 19  the total of every exam month per method              ← sff_series_exam_detail
   exam_summary_query      step 19  the exam per method and horizon                       ← sff_series_exam_detail
@@ -69,10 +69,10 @@ GROUP BY s02_rol ORDER BY MIN({period});"""
 
 
 def calendar_query(configuration) -> str:
-    """Step 02: the calendar per month (the content of sff_calendario)."""
+    """Step 02: the calendar per month."""
     core = table_in_sql(configuration, TABLE_CORE)
     period = configuration.period_col
-    return f"""-- step 02 · the calendar per month (sff_calendario)
+    return f"""-- step 02 · the calendar per month
 SELECT {period}, MIN(s02_rol) AS rol, MAX(s02_es_mes_en_curso) AS es_mes_en_curso, COUNT(*) AS filas,
        SUM(s02_vencen_unidades) AS unidades_vencen, SUM(s02_vencen_usd) AS usd_vence,
        SUM(s02_renovadas_unidades) AS unidades_renovadas, SUM(s02_renovado_usd) AS usd_renovado,

@@ -1,6 +1,6 @@
 """
 step_informe.py — The report: what the raw was, how it was improved, and how well the
-framework predicts the renewal rate. And the card of every series.
+framework predicts the renewal rate.
 
 It reads the results of every step that has run and writes, in the output folder, the
 markdown report informe_sff.md with these chapters:
@@ -14,23 +14,19 @@ markdown report informe_sff.md with these chapters:
      risk level and for the total.
   6. The revaluation: the uplift of the cells, the contract rule and the backtest's verdict.
   7. The forecast in money: by month and by year, with its bands; the final validation.
-  8. The card of every series (sff_ficha_serie) and what is still to come.
-It also writes sff_ficha_serie: one row per series with every attribute known about it.
+  8. Where every series is (sff_forecast_series) and what is still to come.
 
 Actions (logged as they are done):
-  1. the card of every series
-  2. the eight chapters of the report
-  3. check the card and the report                                    checks 1-2
-  4. write the card and the report file                               check 3
-  5. count the checks; stop if any failed
-  6. show the headline numbers, as a table
+  1. the eight chapters of the report, the summary for the business and the charts (graficos.py)
+  2. check the report                                                 check 1
+  3. write the report file
+  4. count the checks; stop if any failed
+  5. show the headline numbers, as a table, and the summary for the business (resumen_negocio.py)
 
 Checks (logged as they are made, numbered, at the level of their status):
-   1. the card has one row per series
-   2. the report has its eight chapters
-   3. table sff_ficha_serie written and read back
+   1. the report has its eight chapters
 
-Output: the card (one row per series) · table sff_ficha_serie · file informe_sff.md.
+Output: the text of the report · file informe_sff.md.
 """
 
 # ─── imports ─────────────────────────────────────────────────────────────────────
@@ -40,25 +36,25 @@ import numpy as np
 import pandas as pd
 
 from config import Config, UNKNOWN_DISCOUNT_BUCKET
-from vocabulario import (CALENDAR_ROLE_COLUMN, COVERAGE_COLUMN, COMPOSITION_ID_COLUMN, GATE_LEVEL, LEVEL_OWN,
-                         METHOD_FRAMEWORK, PURPOSE_SELECTION, REPORT_FILE_NAME, ROLES_IN_ORDER, ROLE_PROJECTION,
+from graficos import CHART_FOLDER, draw_charts
+from resumen_negocio import business_summary, show_business_summary
+from vocabulario import (CALENDAR_ROLE_COLUMN, COMPOSITION_ID_COLUMN, GATE_LEVEL,
+                         METHOD_BASELINE, METHOD_FRAMEWORK, PURPOSE_SELECTION, REPORT_FILE_NAME, ROLES_IN_ORDER, ROLE_PROJECTION,
                          S0_PIPELINE_USD_COLUMN, S0_RENEWED_UNITS_COLUMN, S0_RENEWED_USD_COLUMN, SERIES_ID_COLUMN,
-                         SYNTHETIC_COLUMN, TABLE_SERIES_CARD, TOTAL_ORIGIN_TOTAL, TRUTH_ROLES, UPLIFT_CELL_ID_COLUMN)
+                         TOTAL_ORIGIN_TOTAL, UPLIFT_CELL_ID_COLUMN)
 
 
 # ─── the step ────────────────────────────────────────────────────────────────────
 STEP_LABEL = "IN"
 STEP_NAME = "REPORT"
 STEP_PURPOSE = ("tell, with the numbers of this run, what the raw was and how it was improved, the gaps filled, how "
-                "the binomial support improved, the dynamics of the rate and how well the rate is predicted; and "
-                "leave the card of every series")
-STEP_ACTIONS = ["the card of every series",
-                "the eight chapters of the report",
-                "check the card and the report (checks 1-2)",
-                "write the card and the report file (check 3)",
+                "the binomial support improved, the dynamics of the rate and how well the rate is predicted")
+STEP_ACTIONS = ["the eight chapters of the report",
+                "check the report (check 1)",
+                "write the report file",
                 "count the checks; stop if any failed",
-                "show the headline numbers, as a table"]
-STEP_OUTPUT = "one row per series (the card) · table sff_ficha_serie · file informe_sff.md"
+                "show the headline numbers, as a table, and the summary for the business"]
+STEP_OUTPUT = "the text of the report · file informe_sff.md"
 
 # ─── named constants ─────────────────────────────────────────────────────────────
 CHAPTER_COUNT = 8
@@ -87,16 +83,12 @@ def markdown_table(frame: pd.DataFrame, decimals: int = 2) -> str:
     return "\n".join([header, separator] + rows) + "\n"
 
 
-def build_report(raw: pd.DataFrame, results: dict, configuration: Config) -> pd.DataFrame:
-    """The card of every series and the markdown report; checked and written."""
+def build_report(raw: pd.DataFrame, results: dict, configuration: Config) -> str:
+    """The markdown report; checked and written. Returns its text."""
     configuration.log_step_start(STEP_LABEL, STEP_NAME, STEP_PURPOSE, STEP_ACTIONS, STEP_OUTPUT)
     check_log = []
 
-    # [1] the card of every series
-    card = series_card(results, configuration)
-    configuration.log_action(STEP_LABEL, 1, f"card of {len(card):,} series × {len(card.columns)} attributes")
-
-    # [2] the chapters
+    # [1] the chapters
     headline, chapters = [], []
     chapters.append(chapter_raw(raw, results, configuration))
     chapters.append(chapter_new_rows(results, configuration))
@@ -105,77 +97,55 @@ def build_report(raw: pd.DataFrame, results: dict, configuration: Config) -> pd.
     chapters.append(chapter_precision(results, configuration, headline))
     chapters.append(chapter_uplift(results, configuration))
     chapters.append(chapter_forecast(results, configuration, headline))
-    chapters.append(chapter_card_and_next(card))
-    report_text = report_cover(raw, results, configuration, headline) + "\n".join(chapters)
-    configuration.log_action(STEP_LABEL, 2, f"{len(chapters)} chapters written ({len(report_text):,} characters)")
+    chapters.append(chapter_where_and_next(results))
+    summary_lines = business_summary(results, configuration)
+    charts = draw_charts(results, configuration)
+    configuration.log_action(STEP_LABEL, 1, f"{len(charts)} charts drawn in {os.path.join(configuration.output_folder or '.', CHART_FOLDER)}: "
+                                            + ", ".join(charts))
+    report_text = report_cover(raw, results, configuration, headline, summary_lines, charts) + "\n".join(chapters)
+    configuration.log_action(STEP_LABEL, 1, f"{len(chapters)} chapters written ({len(report_text):,} characters)")
 
-    # [3] the checks
-    configuration.log_action(STEP_LABEL, 3, "checking the card and the report")
-    configuration.log_check(STEP_LABEL, check_log, "the card has one row per series",
-                            len(card) == len(results["series"]) and card[SERIES_ID_COLUMN].is_unique,
-                            failure_detail=f"{len(card):,} card rows for {len(results['series']):,} series",
-                            context=f"{len(card):,} series")
+    # [2] the check
+    configuration.log_action(STEP_LABEL, 2, "checking the report")
     configuration.log_check(STEP_LABEL, check_log, f"the report has its {CHAPTER_COUNT} chapters",
                             report_text.count("\n## ") == CHAPTER_COUNT,
                             failure_detail=f"{report_text.count(chr(10) + '## ')} chapters found")
 
-    # [4] the card and the file
-    configuration.log_action(STEP_LABEL, 4, "writing the card and the report file")
-    configuration.write_table(STEP_LABEL, check_log, card, TABLE_SERIES_CARD)
+    # [3] the file
+    configuration.log_action(STEP_LABEL, 3, "writing the report file")
     os.makedirs(configuration.output_folder, exist_ok=True)
     report_path = os.path.join(configuration.output_folder, REPORT_FILE_NAME)
     with open(report_path, "w", encoding="utf-8") as report_file:
         report_file.write(report_text)
     configuration.logger.doc(f"[{STEP_LABEL}] report written: {report_path}")
 
-    # [5] the count of the checks; stop if anything failed
-    configuration.log_action(STEP_LABEL, 5, "counting the checks")
+    # [4] the count of the checks; stop if anything failed
+    configuration.log_action(STEP_LABEL, 4, "counting the checks")
     configuration.log_check_summary(STEP_LABEL, STEP_NAME, check_log)
 
-    # [6] the headline numbers
-    configuration.log_action(STEP_LABEL, 6, "the headline numbers of this run:")
+    # [5] the headline numbers, and the summary for the business
+    configuration.log_action(STEP_LABEL, 5, "the headline numbers of this run:")
     configuration.show_table(pd.DataFrame(headline, columns=["indicador", "valor"]))
-    return card
-
-
-# ═══════════════════════════════════════════════════════════════════════════════════
-# THE CARD
-# ═══════════════════════════════════════════════════════════════════════════════════
-
-def series_card(results: dict, configuration: Config) -> pd.DataFrame:
-    """One row per series: route, support, own rate, ladder, estimate, level, the dynamics and
-    the chosen techniques of its estimation id, and their exam error."""
-    card = results["series_estimate"].merge(results["series"][[SERIES_ID_COLUMN, COVERAGE_COLUMN, "primer_mes", "ultimo_mes"]],
-                                            on=SERIES_ID_COLUMN, how="left")
-    dynamics = results.get("pool_dynamics")
-    if dynamics is not None and len(dynamics):
-        card = card.merge(dynamics[[COMPOSITION_ID_COLUMN, "phi", "tendencia", "tendencia_pp_ano", "estacional",
-                                    "amplitud_pp", "meses_alto", "meses_bajo"]], on=COMPOSITION_ID_COLUMN, how="left")
-    backtest = results.get("backtest")
-    if backtest is not None:
-        per_band = backtest["decision"][[COMPOSITION_ID_COLUMN, "tramo_h", "tecnica", "tecnica_origen"]].merge(
-            backtest["exam_by_pool"][[COMPOSITION_ID_COLUMN, "tramo_h", "elegida_err_pp_medio", "retador_err_pp_medio"]],
-            on=[COMPOSITION_ID_COLUMN, "tramo_h"], how="left")
-        wide = per_band.pivot(index=COMPOSITION_ID_COLUMN, columns="tramo_h")
-        wide.columns = [f"{name}_{band}" for name, band in wide.columns]
-        card = card.merge(wide, left_on=COMPOSITION_ID_COLUMN, right_index=True, how="left")
-    card["error_estimacion_pp"] = configuration.z * card["se_estimacion_pp"]
-    return card
+    show_business_summary(results, configuration, STEP_LABEL)
+    return report_text
 
 
 # ═══════════════════════════════════════════════════════════════════════════════════
 # THE CHAPTERS
 # ═══════════════════════════════════════════════════════════════════════════════════
 
-def report_cover(raw: pd.DataFrame, results: dict, configuration: Config, headline: list) -> str:
-    fine = results["fine_table"]
+def report_cover(raw: pd.DataFrame, results: dict, configuration: Config, headline: list, summary_lines: list = (),
+                 charts: dict = None) -> str:
     series = results["series"]
     headline.insert(0, ("filas del extracto", f"{len(raw):,}"))
     headline.insert(1, ("forecast series", f"{len(series):,}"))
     headline.insert(2, ("USD por predecir", f"${series['usd_por_predecir'].sum():,.0f}"))
     lines = ["# SFF · Informe de la ejecución",
              f"Mes en curso: **{configuration.calendar_boundaries()['current']}** · {configuration.calendar_description()}",
+             "", "### Resumen para negocio", ""] + [f"- {line.strip().lstrip('·').strip()}" for line in summary_lines] + [
              "", "### Cifras principales", "", markdown_table(pd.DataFrame(headline, columns=["indicador", "valor"])), ""]
+    if charts:
+        lines += ["### Gráficos", ""] + [f"![{name}]({CHART_FOLDER}/{os.path.basename(path)})" for name, path in charts.items()] + [""]
     return "\n".join(lines)
 
 
@@ -219,7 +189,7 @@ def chapter_raw(raw: pd.DataFrame, results: dict, configuration: Config) -> str:
 def chapter_new_rows(results: dict, configuration: Config) -> str:
     """Chapter 2: every row the framework adds or wipes, in one format (step 21), and the series with most gaps."""
     lines = ["## 2 · Las filas que añade (y borra) el framework", "",
-             "El forecast no usa el extracto tal cual. Añade o borra filas de cuatro tipos, cada uno por un motivo:", "",
+             "El forecast no usa el extracto tal cual. Añade o borra filas de cinco tipos, cada uno por un motivo:", "",
              "- **hueco** (paso 08): una forecast unit sin nada que vencer, añadida DENTRO de la historia de una serie "
              "estimable para que su serie mensual no tenga agujeros (las técnicas leen meses consecutivos: una tendencia, una "
              "estación, una media móvil). Todas sus medidas son 0 y su tasa queda **nula, nunca 0 %**: añade un mes, no dinero.",
@@ -382,18 +352,18 @@ def chapter_precision(results: dict, configuration: Config, headline: list) -> s
         weights = rows["usd_por_predecir"] + 1e-9
         band_rows.append({"tramo": band_name, "pools": len(rows),
                           "error_elegida_pp": np.average(rows["elegida_err_pp_medio"], weights=weights),
-                          "error_retador_pp": np.average(rows["retador_err_pp_medio"], weights=weights),
+                          "error_por_defecto_pp": np.average(rows["por_defecto_err_pp_medio"], weights=weights),
                           "sesgo_elegida_pp": np.average(rows["elegida_sesgo_pp"], weights=weights),
                           "dentro_banda": rows["dentro_banda"].mean()})
     by_band = pd.DataFrame(band_rows)
 
     card = results["series_estimate"][[SERIES_ID_COLUMN, COMPOSITION_ID_COLUMN, "nivel_riesgo", "usd_por_predecir"]]
     short = exam_by_pool[exam_by_pool["tramo_h"] == list(configuration.horizon_bands)[0]]
-    by_level = card.merge(short[[COMPOSITION_ID_COLUMN, "elegida_err_pp_medio", "retador_err_pp_medio"]], on=COMPOSITION_ID_COLUMN, how="left")
+    by_level = card.merge(short[[COMPOSITION_ID_COLUMN, "elegida_err_pp_medio", "por_defecto_err_pp_medio"]], on=COMPOSITION_ID_COLUMN, how="left")
     by_level = (by_level.dropna(subset=["elegida_err_pp_medio"]).groupby("nivel_riesgo")
                 .apply(lambda rows: pd.Series({"series": int(len(rows)), "usd_por_predecir": rows["usd_por_predecir"].sum(),
                                                "error_elegida_pp": np.average(rows["elegida_err_pp_medio"], weights=rows["usd_por_predecir"] + 1e-9),
-                                               "error_retador_pp": np.average(rows["retador_err_pp_medio"], weights=rows["usd_por_predecir"] + 1e-9)}),
+                                               "error_por_defecto_pp": np.average(rows["por_defecto_err_pp_medio"], weights=rows["usd_por_predecir"] + 1e-9)}),
                        include_groups=False).reset_index())
     if len(by_level):
         by_level["series"] = by_level["series"].astype(int)
@@ -401,16 +371,21 @@ def chapter_precision(results: dict, configuration: Config, headline: list) -> s
     portfolio_summary = results.get("portfolio_exam_summary")
     if portfolio_summary is not None:
         for horizon, block in portfolio_summary.groupby("h"):
-            framework = block[block["metodo"] == METHOD_FRAMEWORK].iloc[0]
-            spreadsheet = block[block["metodo"].str.startswith("hoja_")].sort_values("error_total_medio").iloc[0]
+            framework = block[block["metodo"] == METHOD_FRAMEWORK]
+            baseline = block[block["metodo"] == METHOD_BASELINE]
+            if framework.empty or baseline.empty:
+                continue
+            framework, baseline = framework.iloc[0], baseline.iloc[0]
             alone = block[block["metodo"] == "raw"]
-            headline.append((f"error del TOTAL en el examen, h = {horizon}: framework vs mejor hoja de cálculo vs serie sola",
-                             f"{framework['error_total_medio']:.1%} vs {spreadsheet['error_total_medio']:.1%} ({spreadsheet['metodo']})"
-                             + (f" vs {alone['error_total_medio'].iloc[0]:.1%}" if len(alone) else "")))
+            headline.append((f"error del TOTAL en el examen, h = {horizon}: framework vs baseline vs serie sola",
+                             f"{framework['error_total_medio']:.1%} vs {baseline['error_total_medio']:.1%}"
+                             + (f" vs {alone['error_total_medio'].iloc[0]:.1%}" if len(alone) else "")
+                             + (f" · ${framework['ganancia_usd_mes']:,.0f} menos de error al mes que la baseline, mejor en el "
+                                f"{framework['meses_mejor_que_baseline']:.0%} de los meses" if pd.notna(framework.get("ganancia_usd_mes")) else "")))
     if len(by_band):
         first = by_band.iloc[0]
         headline.append((f"error medio de la tasa por pool en el examen ({first['tramo']})",
-                         f"{first['error_elegida_pp']:.1f} pp (retador {first['error_retador_pp']:.1f} pp)"))
+                         f"{first['error_elegida_pp']:.1f} pp (técnica por defecto {first['error_por_defecto_pp']:.1f} pp)"))
     choices = (decision.groupby(["tramo_h", "tecnica_origen"]).size().rename("ids").reset_index())
     selection = predictions[predictions["proposito"] == PURPOSE_SELECTION]
     ranking = (selection.assign(abs_norm=selection["err_norm"].abs()).groupby(["tramo_h", "tecnica"])["abs_norm"].mean()
@@ -420,20 +395,23 @@ def chapter_precision(results: dict, configuration: Config, headline: list) -> s
              "a horizonte h, cada técnica solo ve hasta T − h. Los meses de **selección** (los "
              f"{configuration.backtest_selection_months} anteriores al examen) eligen la técnica; los meses de **examen** "
              f"({boundaries['test_start']} a {boundaries['current'] - 1}) la miden sin que la haya visto. El error se "
-             "compara con el ruido binomial del mes (err_norm ≈ 1: tan cerca como permite el azar). Una técnica sustituye al "
-             f"retador ({configuration.challenger_technique}) solo si le gana por un margen. Compiten todas las técnicas que "
+             "compara con el ruido binomial del mes (err_norm ≈ 1: tan cerca como permite el azar). Una técnica sustituye a la "
+             f"técnica por defecto ({configuration.default_technique}) solo si le gana por un margen en los mismos meses. Compiten todas las técnicas que "
              "la historia permite, también las de series temporales.", "",
-             f"Los pools juzgados cubren el **{judged_share:.0%}** del dinero por predecir; el resto toma el retador.", "",
+             f"Los pools juzgados cubren el **{judged_share:.0%}** del dinero por predecir; el resto toma la técnica por defecto.", "",
              "**Ranking en los meses de selección** (error normalizado medio):", "", markdown_table(ranking),
              "**Elecciones:**", "", markdown_table(choices, 0),
              "**Precisión en el examen por tramo** (error medio de la tasa en pp, ponderado por dinero; dentro_banda: "
              "proporción de errores dentro de la banda del 90 %):", "", markdown_table(by_band),
              "**Precisión en el examen por nivel de riesgo** (tramo corto):", "", markdown_table(by_level),
-             "**La cartera en el examen, serie a serie: el framework frente a la serie sola (raw) y a la hoja de cálculo** "
-             "(paso 19; cada serie predicha como la predice el forecast, con solo lo que se sabía h meses antes; raw: la serie "
-             "con su propia historia, sin escalera; la hoja: la tasa de los últimos "
-             f"{configuration.baseline_months} meses por grano × la pipeline real; error_total: de la suma de la cartera; "
-             "wape_series: serie a serie, sin compensaciones):", "",
+             "**La cartera en el examen, serie a serie: la cascada desde la baseline** (paso 19; cada serie predicha con solo "
+             "lo que se sabía h meses antes. baseline: la tasa de su celda mandatory en los últimos "
+             f"{configuration.baseline_months} meses × lo que vence, el cálculo que cualquiera podría hacer; raw: la serie con su "
+             "propia historia, sin escalera; por_defecto: escalera y credibilidad con la técnica por defecto; framework: además la "
+             "técnica elegida. error_total: de la suma de la cartera; error_usd_medio y ganancia_usd_mes: el mismo error en USD "
+             "y lo que se yerra menos que la baseline; meses_mejor_que_baseline: consistencia; wape_series: serie a serie, sin "
+             "compensaciones. La estructura (escalera, k, técnica elegida) se estima con todos los meses cerrados: el examen del "
+             "framework es algo optimista):", "",
              markdown_table(results["portfolio_exam_summary"], 3) if results.get("portfolio_exam_summary") is not None else "",
              markdown_table(results["portfolio_exam"], 3) if results.get("portfolio_exam") is not None else ""]
     by_size, total = exam_error_against_noise(results)
@@ -510,7 +488,8 @@ def chapter_uplift(results: dict, configuration: Config) -> str:
              "**estadística** (el uplift observado en las renovaciones pasadas de su celda de uplift: dimensiones mandatory, "
              "extras de revalorización y tramo de descuento; con menos de "
              f"{configuration.uplift_floor:.0f} renovadores toma el de su padre) y la del **contrato** (quien pagó con "
-             "descuento d renueva a lista: 1 / (1 − d)).", "",
+             "descuento d renueva al MSRP del vencimiento: 1 / (1 − d)), sobre todas las filas con descuento conocido o "
+             "solo sobre las neutras (sin marca: contrato_neutras); el examen elige.", "",
              "**Las celdas por origen de su uplift:**", "", markdown_table(by_origin),
              "**La regla de contrato frente a las renovaciones pasadas con descuento conocido** (ratio_realizacion 1 = exacta):", "",
              markdown_table(check, 3),
@@ -568,13 +547,16 @@ def chapter_forecast(results: dict, configuration: Config, headline: list) -> st
     return "\n".join(lines) + "\n"
 
 
-def chapter_card_and_next(card: pd.DataFrame) -> str:
-    lines = ["## 8 · La ficha de cada serie y lo que falta", "",
-             f"`sff_ficha_serie` tiene una fila por serie ({len(card):,}) con todo lo que el framework sabe de ella: ruta, "
-             "soporte y tasa propios, grupo final y su referencia, credibilidad, tasa estimada y sus dos errores, nivel de riesgo, la dinámica y "
-             "las técnicas de su id de estimación y su error en el examen. `sff_nucleo` tiene la misma información fila a fila "
-             "con los meses (en Power BI: seleccionar `s03_fs_id`).", "",
-             "**Lo que falta** (siguientes pasos): el horizonte extendido (reentradas de 2026 y captación simulada de 2027, "
-             "más allá de la pipeline que trae el extracto), y los análisis del bloque B (composición y mix, descuento y churn, "
-             "maduración de las señales, escenarios de precio, baseline de la hoja de cálculo, top movers)."]
+def chapter_where_and_next(results: dict) -> str:
+    series = results.get("series")
+    count = f" ({len(series):,} series)" if series is not None else ""
+    lines = ["## 8 · Dónde está cada serie y lo que falta", "",
+             f"`sff_forecast_series` tiene una fila por forecast series{count} con todo lo que el framework sabe de ella: "
+             "ruta, soporte y tasa propios, las 4 etapas y su composición, credibilidad, tasa estimada y sus dos errores, "
+             "nivel de riesgo, la dinámica, la técnica de cada tramo y su examen. `sff_nucleo` tiene lo mismo fila a "
+             "fila con los meses (en Power BI: unir por `s03_fs_id`).", "",
+             "**Lo que falta** (siguientes pasos, detalle en ESTADO_Y_PLAN): la baseline como referencia de todas las "
+             "ganancias (celda mandatory, últimos 3 meses) y la cascada hasta el framework; la banda del total desde el "
+             "examen honesto; la maduración de dormant y de stay subscribe como marcas con columnas `_month_k`; el ciclo "
+             "de subida de 24/36 meses para las licencias multianuales."]
     return "\n".join(lines) + "\n"

@@ -8,13 +8,11 @@ test_step_09.py — Step 09: the figures of every dimension and the collapse ord
 import numpy as np
 import pandas as pd
 
-from step_05_lookups import build_lookups
 from step_08_rate_series import build_rate_series
 from step_09_dimensions import (analyse_dimensions, sequential_collapse_order, weighted_eta2, weighted_omega2,
                                 weighted_r2)
 from test_helpers import check, console_of, count_status, finish, synthetic_with
 from test_step_08 import inputs_synthetic
-from test_step_05 import units_synthetic
 
 
 def test_the_statistics() -> None:
@@ -44,16 +42,13 @@ def test_the_step() -> None:
     frames = {}
     console_of(lambda: frames.setdefault("rate", build_rate_series(units, series, configuration)))
     _, series_rate = frames["rate"]
-    fine, _, _ = units_synthetic()
-    console_of(lambda: frames.setdefault("lookups", build_lookups(fine, units, configuration)))
-    console = console_of(lambda: frames.setdefault("dims", analyse_dimensions(series_rate, frames["lookups"]["lookup_fs"],
-                                                                              configuration)))
-    decision, pairs = frames["dims"]
+    console = console_of(lambda: frames.setdefault("dims", analyse_dimensions(series_rate, series, configuration)))
+    decision = frames["dims"]
     check(set(decision["dimension"]) == {"region", "product", "channel"}, "mandatory and extra_renovacion measured")
     check(sorted(decision.loc[decision["grupo"] == "mandatory", "orden_colapso"]) == [1, 2]
           and decision.loc[decision["dimension"] == "channel", "orden_colapso"].item() == 0,
           "the two mandatory dims get positions 1 and 2; the extra gets 0 (it is annulled, not collapsed)")
-    check(count_status(console, "ok") == 6 and "6 checks: 6 ok" in console, "the 6 checks pass and are logged")
+    check(count_status(console, "ok") == 5 and "5 checks: 5 ok" in console, "the 5 checks pass and are logged")
     check("collapse order:" in console, "the collapse order is logged")
     written = pd.read_sql("SELECT * FROM sff_decision_eta2", configuration.sql_engine)
     check(len(written) == 3, "sff_decision_eta2 written")

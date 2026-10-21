@@ -12,7 +12,7 @@ seasonality verdict restricts it: the backtest decides.
 
     id                  family       what it does                                       memory
     T2_mean             average      mean of the whole history                          all
-    T3_ma3              average      mean of the last 3 months (THE CHALLENGER)          3
+    T3_ma3              average      mean of the last 3 months (THE DEFAULT TECHNIQUE)          3
     T3_ma6              average      mean of the last 6 months                          6
     T4_ewma             smoothing    weighted mean, weights halve every 3 months        ~6
     T9_ses              smoothing    simple exponential smoothing (α = 0.3)             ~6
@@ -25,7 +25,6 @@ seasonality verdict restricts it: the backtest decides.
 
 # ─── imports ─────────────────────────────────────────────────────────────────────
 import numpy as np
-import pandas as pd
 
 from config import Config
 
@@ -152,7 +151,7 @@ def holt_winters(y, months, h):
 # id → (family, description, months of memory, minimum months of history, function)
 CATALOGUE = {
     "T2_mean":            ("media", "media de toda la historia", "toda", 1, mean_of_history),
-    "T3_ma3":             ("media", "media de los últimos 3 meses (el retador)", "3", 3, moving_average_3),
+    "T3_ma3":             ("media", "media de los últimos 3 meses (la técnica por defecto)", "3", 3, moving_average_3),
     "T3_ma6":             ("media", "media de los últimos 6 meses", "6", 6, moving_average_6),
     "T4_ewma":            ("suavizado", "media ponderada, pesos que se reducen a la mitad cada 3 meses", "~6", 4, exponentially_weighted_mean),
     "T9_ses":             ("suavizado", "suavizado exponencial simple (α de la Config: ses_alpha)", "~6", 4, simple_exponential_smoothing),
@@ -176,9 +175,3 @@ def predict_logit(technique_id: str, history_logit: np.ndarray, month_numbers: n
     except Exception:
         return float("nan")
     return float(value) if np.isfinite(value) else float("nan")
-
-
-def technique_table() -> pd.DataFrame:
-    return pd.DataFrame([{"tecnica": technique_id, "familia": family, "descripcion": description, "memoria_meses": memory,
-                          "historia_minima_meses": minimum}
-                         for technique_id, (family, description, memory, minimum, _) in CATALOGUE.items()])

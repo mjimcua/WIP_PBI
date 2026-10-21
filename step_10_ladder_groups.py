@@ -57,13 +57,13 @@ Actions (logged as they are done):
   4. the passes: close the groups that reach the floor, move the others one pass up
   5. the final group of every series, and the credibility reference of every final group
   6. check the partition, the signs, the closed groups and the references      checks 1-4
-  7. write the passes, their summary and the final groups                       checks 5-7
+  7. write the passes, their summary, the merges and the composition members    checks 5-8
   8. count the checks; stop if any failed
   9. show how every pass improves the support, as a table
 
 Output: (the passes: series × pass with its group id, the summary by pass, the final group of
 every series with its reference, the members of every reference) · tables sff_ladder_steps,
-sff_ladder_summary, sff_ladder_groups.
+sff_ladder_summary, sff_ladder_merges, sff_composition_members (the final groups stay in memory).
 """
 
 # ─── imports ─────────────────────────────────────────────────────────────────────
@@ -73,8 +73,8 @@ import pandas as pd
 from config import ID_FIELD_SEPARATOR, Config, id_text
 from vocabulario import (COMPOSITION_ID_COLUMN, RATE_COLUMN, ROUTE_COLUMN, ROUTE_PREDICTABLE, SERIES_ID_COLUMN,
                          SIGN_COLUMN, SIGN_MIXED, SIGN_NEUTRAL, SIGN_TOKEN, TABLE_COMPOSITION_MEMBERS,
-                         TABLE_LADDER_GROUPS, TABLE_LADDER_MERGES, TABLE_LADDER_STEPS, TABLE_LADDER_SUMMARY,
-                         UNIVERSE_COLUMN, UNIVERSE_NORMAL, WILDCARD)
+                         TABLE_LADDER_MERGES, TABLE_LADDER_STEPS, TABLE_LADDER_SUMMARY,
+                         WILDCARD)
 
 
 STEP_LABEL = "10"
@@ -88,21 +88,21 @@ STEP_ACTIONS = ["the plan of the passes, from the decision of step 09",
                 "the passes: close the groups that reach the floor, move the others one pass up",
                 "the final group of every series, and the credibility reference of every final group",
                 "check the partition, the signs, the closed groups and the references (checks 1-4)",
-                "write the passes, their summary and the final groups (checks 5-7)",
+                "write the passes, their summary, the merges and the composition members (checks 5-8)",
                 "count the checks; stop if any failed",
                 "show how every pass improves the support, as a table"]
 STEP_OUTPUT = ("series × pass with its group id · the summary by pass · the final group and the reference of every series · "
-               "tables sff_ladder_steps, sff_ladder_summary, sff_ladder_groups")
+               "tables sff_ladder_steps, sff_ladder_summary, sff_ladder_merges, sff_composition_members")
 
 
 
-def build_ladder_groups(rated_units: pd.DataFrame, series_rate: pd.DataFrame, series_lookup: pd.DataFrame,
+def build_ladder_groups(rated_units: pd.DataFrame, series_rate: pd.DataFrame, series_table: pd.DataFrame,
                         dimension_decision: pd.DataFrame, configuration: Config) -> dict:
     """The passes of the ladder, their summary, the final group and reference of every series.
 
     INPUT:   rated_units (step 08: the rate of every unit, gaps included) · series_rate (step 08:
-             route, universe, sign, support of every series) · the series lookup (step 05: the
-             columns of every series) · the dimension decision (step 09) · the Config.
+             route, sign, support of every series) · the series table (step 06: the columns of
+             every series) · the dimension decision (step 09) · the Config.
     OUTPUT:  dict(steps, summary, groups, reference_members).
     RULES:   see the module header.
     EDGE CASES: no timevarying dim → no sign pass. No extra → no extra pass. The passes stop as
@@ -122,9 +122,8 @@ def build_ladder_groups(rated_units: pd.DataFrame, series_rate: pd.DataFrame, se
                                f"own-rate floor {configuration.own_rate_floor:.0f}")
 
     # [2] the estimable series
-    estimable = series_rate[(series_rate[ROUTE_COLUMN] == ROUTE_PREDICTABLE)
-                            & (series_rate[UNIVERSE_COLUMN] == UNIVERSE_NORMAL)][[SERIES_ID_COLUMN, SIGN_COLUMN, "usd_por_predecir"]]
-    estimable = estimable.merge(series_lookup[[SERIES_ID_COLUMN] + configuration.rate_series_columns], on=SERIES_ID_COLUMN)
+    estimable = series_rate[series_rate[ROUTE_COLUMN] == ROUTE_PREDICTABLE][[SERIES_ID_COLUMN, SIGN_COLUMN, "usd_por_predecir"]]
+    estimable = estimable.merge(series_table[[SERIES_ID_COLUMN] + configuration.rate_series_columns], on=SERIES_ID_COLUMN)
     estimable = estimable.set_index(SERIES_ID_COLUMN, drop=False)
     configuration.log_action(STEP_LABEL, 2, f"{len(estimable):,} estimable series · signs "
                                             f"{estimable[SIGN_COLUMN].value_counts().to_dict()}")
@@ -164,10 +163,9 @@ def build_ladder_groups(rated_units: pd.DataFrame, series_rate: pd.DataFrame, se
     check_the_ladder(steps, summary, groups, estimable, history, configuration, check_log)
 
     # [7] the tables
-    configuration.log_action(STEP_LABEL, 7, "writing the passes, their summary and the final groups")
+    configuration.log_action(STEP_LABEL, 7, "writing the passes, their summary, the merges and the composition members")
     configuration.write_table(STEP_LABEL, check_log, steps, TABLE_LADDER_STEPS)
     configuration.write_table(STEP_LABEL, check_log, summary, TABLE_LADDER_SUMMARY)
-    configuration.write_table(STEP_LABEL, check_log, groups, TABLE_LADDER_GROUPS)
     configuration.write_table(STEP_LABEL, check_log, merges, TABLE_LADDER_MERGES)
     configuration.write_table(STEP_LABEL, check_log, members, TABLE_COMPOSITION_MEMBERS)
 

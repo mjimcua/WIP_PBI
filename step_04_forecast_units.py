@@ -9,24 +9,21 @@ these sums. A unit whose renewals are all null (the projection) keeps them null.
 
 Actions (logged as they are done):
   1. group the fine rows by forecast unit
-  2. take the description of each unit (series, month, role, flag) from its first row
+  2. take the description of each unit (series, month, role) from its first row
   3. add up the four measures and count the fine rows of each unit
-  4. check the units and that the money is conserved                checks 1-4
-  5. write the units table                                          check 5
-  6. count the checks; stop if any failed
-  7. show the units per role and the fine rows per unit, as tables
+  4. check the units and that the money is conserved                checks 1-3
+  5. count the checks; stop if any failed
+  6. show the units per role and the fine rows per unit, as tables
 
 Checks (logged as they are made, numbered, at the level of their status):
-   1. the time_series flag is the same in every fine row of a unit
-   2. the four measures are conserved: Σ fine = Σ units
-   3. renewals are numbers in closed months and null from the current month on
-   4. every unit has something falling due in the extract (the ones the calendar wiped on purpose are
+   1. the four measures are conserved: Σ fine = Σ units
+   2. renewals are numbers in closed months and null from the current month on
+   3. every unit has something falling due in the extract (the ones the calendar wiped on purpose are
       counted apart)                                                  (warning only)
-   5. table sff_fact_fu written and read back
 
-Output: the forecast units (one row per fu_id: ids, keys, series columns, month, role,
-current-month mark, time_series flag, number of fine rows, the four measures summed)
-· table sff_fact_fu.
+Output: the forecast units (one row per fu_id: ids, series columns, month, role, current-month mark,
+number of fine rows, the four measures summed), in memory. The time_series rows were separated in
+step 01: every unit here is of the renewal universe.
 """
 
 # ─── imports ─────────────────────────────────────────────────────────────────────
@@ -34,8 +31,7 @@ import pandas as pd
 
 from config import Config
 from vocabulario import (CALENDAR_ROLE_COLUMN, CURRENT_MONTH_COLUMN, FINE_ROWS_COLUMN, ROLES_IN_ORDER,
-                         ROLE_PROJECTION, S0_PIPELINE_UNITS_COLUMN, SERIES_ID_COLUMN, SERIES_KEY_COLUMN, TABLE_UNITS,
-                         UNIT_ID_COLUMN, UNIT_KEY_COLUMN)
+                         ROLE_PROJECTION, S0_PIPELINE_UNITS_COLUMN, SERIES_ID_COLUMN, UNIT_ID_COLUMN)
 
 
 # ─── the step ────────────────────────────────────────────────────────────────────
@@ -44,13 +40,12 @@ STEP_NAME = "FORECAST UNITS"
 STEP_PURPOSE = ("add up the fine rows of every forecast unit (a rate series in its month): the renewal rate is "
                 "studied per unit, because the revaluation values change the price, not the rate")
 STEP_ACTIONS = ["group the fine rows by forecast unit",
-                "take the description of each unit (series, month, role, flag) from its first row",
+                "take the description of each unit (series, month, role) from its first row",
                 "add up the four measures and count the fine rows of each unit",
-                "check the units and that the money is conserved (checks 1-4)",
-                "write the units table (check 5)",
+                "check the units and that the money is conserved (checks 1-3)",
                 "count the checks; stop if any failed",
                 "show the units per role and the fine rows per unit, as tables"]
-STEP_OUTPUT = "one row per forecast unit with its four measures summed · table sff_fact_fu"
+STEP_OUTPUT = "one row per forecast unit with its four measures summed (in memory)"
 
 # ─── named constants ─────────────────────────────────────────────────────────────
 # Money is conserved when the difference is below a cent or a billionth of the total
@@ -58,23 +53,22 @@ STEP_OUTPUT = "one row per forecast unit with its four measures summed · table 
 
 
 def build_forecast_units(fine_table: pd.DataFrame, configuration: Config) -> pd.DataFrame:
-    """Add up the fine rows of every forecast unit; check conservation; write the units table."""
+    """Add up the fine rows of every forecast unit; check conservation."""
     configuration.log_step_start(STEP_LABEL, STEP_NAME, STEP_PURPOSE, STEP_ACTIONS, STEP_OUTPUT)
     check_log = []
     measures = configuration.core_measures
-    flag_column = configuration.flag_time_series_col
 
     # [1] the fine rows of each unit
     grouped_by_unit = fine_table.groupby(UNIT_ID_COLUMN, sort=False)
     configuration.log_action(STEP_LABEL, 1, f"{len(fine_table):,} fine rows grouped into "
                                             f"{grouped_by_unit.ngroups:,} forecast units")
 
-    # [2] the description of each unit: constant inside it (the flag is checked below)
-    description_columns = ([SERIES_ID_COLUMN, SERIES_KEY_COLUMN, UNIT_KEY_COLUMN] + configuration.rate_series_columns
-                           + [configuration.period_col, CALENDAR_ROLE_COLUMN, CURRENT_MONTH_COLUMN, flag_column])
+    # [2] the description of each unit: constant inside it (they come from the series and the month)
+    description_columns = ([SERIES_ID_COLUMN] + configuration.rate_series_columns
+                           + [configuration.period_col, CALENDAR_ROLE_COLUMN, CURRENT_MONTH_COLUMN])
     forecast_units = grouped_by_unit[description_columns].first()
     configuration.log_action(STEP_LABEL, 2, f"each unit described by {len(description_columns)} columns "
-                                            f"(series, month, role, flag)")
+                                            f"(series, month, role)")
 
     # [3] the measures, summed (a unit whose values are all null stays null), and the fine rows
     forecast_units[measures] = grouped_by_unit[measures].sum(min_count=1)
@@ -86,7 +80,6 @@ def build_forecast_units(fine_table: pd.DataFrame, configuration: Config) -> pd.
 
     # [4] the checks
     configuration.log_action(STEP_LABEL, 4, "checking the units and that the money is conserved")
-    check_flag_constant_inside_units(fine_table, grouped_by_unit, configuration, check_log)
     check_money_conserved(fine_table, forecast_units, configuration, check_log)
     check_renewals_by_month(forecast_units, configuration, check_log)
     # a unit at 0 units due: either the calendar wiped it on purpose (step 02: the pipeline of a 1-year
@@ -105,40 +98,18 @@ def build_forecast_units(fine_table: pd.DataFrame, configuration: Config) -> pd.
                             blocking=False,
                             examples=zero_in_extract[[UNIT_ID_COLUMN, configuration.period_col] + measures])
 
-    # [5] the units table, written
-    configuration.log_action(STEP_LABEL, 5, "writing the units table")
-    configuration.write_table(STEP_LABEL, check_log, forecast_units, TABLE_UNITS)
-
-    # [6] the count of the checks; stop if anything failed
-    configuration.log_action(STEP_LABEL, 6, "counting the checks")
+    # [5] the count of the checks; stop if anything failed
+    configuration.log_action(STEP_LABEL, 5, "counting the checks")
     configuration.log_check_summary(STEP_LABEL, STEP_NAME, check_log)
 
-    # [7] what the units look like
+    # [6] what the units look like
     log_units_report(forecast_units, configuration)
     return forecast_units
 
 
-def check_flag_constant_inside_units(fine_table: pd.DataFrame, grouped_by_unit, configuration: Config,
-                                     check_log: list) -> None:
-    """Check 1: the fine rows of a unit agree on the time_series flag. If they did not, the
-    unit would belong to two universes at once (an inconsistent extract). Month, role and
-    current-month mark are constant by construction: they come from the month."""
-    flag_column = configuration.flag_time_series_col
-    flag_values_per_unit = grouped_by_unit[flag_column].nunique(dropna=False)
-    mixed_units = flag_values_per_unit[flag_values_per_unit > 1].index
-    mixed_rows = fine_table[fine_table[UNIT_ID_COLUMN].isin(mixed_units)]
-    configuration.log_check(STEP_LABEL, check_log, f"{flag_column} is the same in every fine row of a unit",
-                            len(mixed_units) == 0,
-                            failure_detail=f"{len(mixed_units):,} units mix rows with {flag_column} 0 and 1 "
-                                           f"(one unit, two universes: inconsistent extract)",
-                            examples=mixed_rows.sort_values(UNIT_ID_COLUMN)[
-                                [UNIT_ID_COLUMN] + configuration.extra_revalorizacion + [flag_column]
-                                + configuration.core_measures])
-
-
 def check_money_conserved(fine_table: pd.DataFrame, forecast_units: pd.DataFrame, configuration: Config,
                           check_log: list) -> None:
-    """Check 2: not a cent appears or disappears when the fine rows are added up."""
+    """Check 1: not a cent appears or disappears when the fine rows are added up."""
     differences = {}
     for measure_column in configuration.core_measures:
         fine_total = float(fine_table[measure_column].sum())
@@ -153,7 +124,7 @@ def check_money_conserved(fine_table: pd.DataFrame, forecast_units: pd.DataFrame
 
 
 def check_renewals_by_month(forecast_units: pd.DataFrame, configuration: Config, check_log: list) -> None:
-    """Check 3: after step 02, a closed unit has a renewal (0 or more) and a projection unit
+    """Check 2: after step 02, a closed unit has a renewal (0 or more) and a projection unit
     has none (null). A null closed unit or a projection unit with a number means the
     fine table lost the calendar on the way."""
     renewed_units = forecast_units[configuration.renewed_units_col]
@@ -170,8 +141,8 @@ def check_renewals_by_month(forecast_units: pd.DataFrame, configuration: Config,
 
 
 def log_units_report(forecast_units: pd.DataFrame, configuration: Config) -> None:
-    """Action 7: units per role and fine rows per unit, as tables."""
-    configuration.log_action(STEP_LABEL, 7, "units per role (series = distinct rate series with a unit in that role):")
+    """Action 6: units per role and fine rows per unit, as tables."""
+    configuration.log_action(STEP_LABEL, 6, "units per role (series = distinct rate series with a unit in that role):")
     per_role_rows = []
     for role in ROLES_IN_ORDER:
         role_units = forecast_units[forecast_units[CALENDAR_ROLE_COLUMN] == role]

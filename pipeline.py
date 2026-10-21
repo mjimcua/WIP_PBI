@@ -1,7 +1,7 @@
 """
 pipeline.py — The steps of the SFF with formal interfaces, run over a common context.
 
-Three pieces (the pattern of a data pipeline: node + data catalogue + pipeline):
+Four pieces (the pattern of a data pipeline: contract + node + data catalogue + pipeline):
 
   TableContract     a table declared once: its grain, its key (unique) and its required columns.
                     Checked when a step writes it: a missing column or a repeated key stops the run
@@ -22,11 +22,13 @@ In a notebook:
 """
 
 # ─── imports ─────────────────────────────────────────────────────────────────────
+import os
 import time
 from dataclasses import dataclass, field
 from typing import Callable
 
 import pandas as pd
+import sqlalchemy
 
 import prediction
 import techniques
@@ -36,9 +38,7 @@ from step_01_values_and_levels import validate_values_and_build_levels
 from step_02_apply_calendar import apply_calendar
 from step_03_fine_table import build_fine_table
 from step_04_forecast_units import build_forecast_units
-from step_05_lookups import build_lookups
 from step_06_series_routes import build_series_routes
-from step_07_support_bound import build_support_bound
 from step_08_rate_series import build_rate_series
 from step_09_dimensions import analyse_dimensions
 from step_10_ladder_groups import build_ladder_groups
@@ -57,7 +57,7 @@ from step_22_power_bi import build_power_bi_tables
 from step_audit import build_audit_tables
 from step_informe import build_report
 from step_nucleo import build_core_table
-from vocabulario import COMPOSITION_ID_COLUMN, SERIES_ID_COLUMN, UNIT_ID_COLUMN
+from vocabulario import COMPOSITION_ID_COLUMN, RETIRED_TABLES, SERIES_ID_COLUMN, UNIT_ID_COLUMN
 
 
 class ContractError(ValueError):
@@ -200,9 +200,28 @@ class Orchestrator:
         for _, row in changed.iterrows():
             self.configuration.logger.doc(f"[ORQ]   {row['parametro']} = {row['valor']}   · steps {row['pasos'] or '—'}")
 
+    def warn_retired_tables(self) -> None:
+        """At the start of a run: the tables an earlier version wrote and this one no longer writes, if they are still
+        there (they would be read as if they were of this run). It does not drop them: it prints the SQL to do it."""
+        configuration = self.configuration
+        names = [f"{configuration.table_prefix}{table_name}" for table_name in RETIRED_TABLES]
+        if configuration.sql_engine is not None:
+            existing = set(sqlalchemy.inspect(configuration.sql_engine).get_table_names(schema=configuration.sql_schema))
+            stale = [name for name in names if name in existing]
+            qualified = [f"{configuration.sql_schema}.{name}" if configuration.sql_schema else name for name in stale]
+            how = "; ".join(f"DROP TABLE {name}" for name in qualified)
+        else:
+            folder = configuration.output_folder or "."
+            stale = [name for name in names if os.path.exists(os.path.join(folder, f"{name}.csv"))]
+            how = "delete " + ", ".join(f"{name}.csv" for name in stale) + f" in {folder}"
+        if stale:
+            configuration.logger.doc(f"[ORQ] OJO: {len(stale)} tables of an earlier version are still there and this run will "
+                                     f"not update them ({', '.join(stale)}). To remove them: {how}")
+
     def run(self) -> dict:
         """Every step, in the order of their dependencies; the results under their usual names."""
         self.log_changed_parameters()
+        self.warn_retired_tables()
         for step_name in self.order:
             self.run_step(step_name)
         self.show_timings()
@@ -280,8 +299,7 @@ def sff_steps() -> list:
         return {"rated_units": rated_units, "series_rate": series_rate}
 
     def dimensions(context):
-        decision, pairs = analyse_dimensions(context["series_rate"], context["lookups"]["lookup_fs"], context.configuration)
-        return {"dimension_decision": decision, "dimension_pairs": pairs}
+        return {"dimension_decision": analyse_dimensions(context["series_rate"], context["series_table"], context.configuration)}
 
     def credibility(context):
         estimate, money = climb_the_ladder(context["series_rate"], context["ladder"], context.configuration)
@@ -292,7 +310,8 @@ def sff_steps() -> list:
         return {"pool_series": series, "pool_reference": reference}
 
     def dynamics(context):
-        pool_dynamics, profile, portfolio = measure_dynamics(context["pool_series"], context["pool_reference"], context.configuration)
+        pool_dynamics, profile, portfolio = measure_dynamics(context["pool_series"], context["pool_reference"], context.configuration,
+                                                             rated_units=context["rated_units"])
         return {"pool_dynamics": pool_dynamics, "portfolio_profile": profile, "portfolio_dynamics": portfolio}
 
     def uplift(context):
@@ -313,7 +332,8 @@ def sff_steps() -> list:
     def series_exam(context):
         return {"series_exam": examine_series(context["rated_units"], context["series_estimate"], context["pool_series"],
                                               context["backtest"], context.configuration,
-                                              reference_members=context["ladder"]["reference_members"])}
+                                              reference_members=context["ladder"]["reference_members"],
+                                              fine_table=context["fine_table"])}
 
     def time_series(context):
         table, total = build_time_series_and_total(context["time_series_rows"], context["fine_table"],
@@ -324,12 +344,12 @@ def sff_steps() -> list:
         return {"audit": build_audit_tables(context["ladder"], context["series_rate"], context["series_estimate"],
                                             context["rated_units"], context["pool_series"], context["pool_reference"],
                                             context["pool_dynamics"], context["backtest"], context["forecast"]["forecast"],
-                                            context.configuration, series_exam_detail=context["series_exam"]["detail"])}
+                                            context.configuration)}
 
     def core(context):
         core_table, legend, dimension = build_core_table(
             context["fine_table"], context.configuration, forecast_units=context["forecast_units"],
-            support_bound=context["support_bound"], rated_units=context["rated_units"], series_table=context["series_table"],
+            rated_units=context["rated_units"], series_table=context["series_table"],
             series_rate=context["series_rate"], series_estimate=context["series_estimate"], pool_dynamics=context["pool_dynamics"],
             technique_decision=context["backtest"]["decision"], exam_by_pool=context["backtest"]["exam_by_pool"],
             forecast=context["forecast"]["forecast"], time_series_rows=context["time_series_rows"],
@@ -353,35 +373,31 @@ def sff_steps() -> list:
              lambda context: {"fine_table": build_fine_table(context["calendared_raw"], context.configuration)}),
         Step("forecast_units", "04", ("fine_table",), ("forecast_units",),
              lambda context: {"forecast_units": build_forecast_units(context["fine_table"], context.configuration)}),
-        Step("lookups", "05", ("fine_table", "forecast_units"), ("lookups",),
-             lambda context: {"lookups": build_lookups(context["fine_table"], context["forecast_units"], context.configuration)}),
         Step("series_routes", "06", ("forecast_units",), ("series_table",),
              lambda context: {"series_table": build_series_routes(context["forecast_units"], context.configuration)}),
-        Step("support_bound", "07", ("forecast_units",), ("support_bound",),
-             lambda context: {"support_bound": build_support_bound(context["forecast_units"], context.configuration)}),
         Step("rate_series", "08", ("forecast_units", "series_table"), ("rated_units", "series_rate"), rate_series),
-        Step("dimensions", "09", ("series_rate", "lookups"), ("dimension_decision", "dimension_pairs"), dimensions),
-        Step("ladder", "10", ("rated_units", "series_rate", "lookups", "dimension_decision"), ("ladder",),
+        Step("dimensions", "09", ("series_rate", "series_table"), ("dimension_decision",), dimensions),
+        Step("ladder", "10", ("rated_units", "series_rate", "series_table", "dimension_decision"), ("ladder",),
              lambda context: {"ladder": build_ladder_groups(context["rated_units"], context["series_rate"],
-                                                            context["lookups"]["lookup_fs"], context["dimension_decision"],
+                                                            context["series_table"], context["dimension_decision"],
                                                             context.configuration)}),
         Step("credibility", "11", ("series_rate", "ladder"), ("series_estimate", "money_by_level"), credibility),
         Step("compositions", "12", ("rated_units", "ladder", "series_estimate"), ("pool_series", "pool_reference"), compositions),
-        Step("dynamics", "13", ("pool_series", "pool_reference"), ("pool_dynamics", "portfolio_profile", "portfolio_dynamics"), dynamics),
+        Step("dynamics", "13", ("pool_series", "pool_reference", "rated_units"), ("pool_dynamics", "portfolio_profile", "portfolio_dynamics"), dynamics),
         Step("backtest", "14", ("pool_series", "pool_reference"), ("backtest",),
              lambda context: {"backtest": run_backtest(context["pool_series"], context["pool_reference"], context.configuration)}),
         Step("uplift", "15", ("fine_table",), ("uplift_cells", "contract_check", "uplift_homogeneity", "price_increases"), uplift),
         Step("uplift_backtest", "16", ("fine_table",), ("uplift_backtest", "uplift_verdict"), uplift_backtest),
         Step("forecast", "17", ("fine_table", "forecast_units", "series_estimate", "pool_series", "pool_reference", "backtest",
                                 "uplift_cells", "uplift_verdict", "rated_units", "price_increases"), ("forecast",), forecast),
-        Step("series_exam", "19", ("rated_units", "series_estimate", "pool_series", "backtest", "ladder"), ("series_exam",), series_exam),
+        Step("series_exam", "19", ("rated_units", "series_estimate", "pool_series", "backtest", "ladder", "fine_table"), ("series_exam",), series_exam),
         Step("time_series", "20", ("time_series_rows", "fine_table", "forecast"), ("time_series", "forecast_total"), time_series),
         Step("new_rows", "21", ("fine_table", "rated_units", "forecast"), ("new_rows",),
              lambda context: {"new_rows": count_the_new_rows(context["fine_table"], context["rated_units"],
                                                              context["forecast"]["forecast"], context.configuration)}),
         Step("audit", "AUD", ("ladder", "series_rate", "series_estimate", "rated_units", "pool_series", "pool_reference",
-                              "pool_dynamics", "backtest", "forecast", "series_exam"), ("audit",), audit),
-        Step("core", "NU", ("fine_table", "forecast_units", "support_bound", "rated_units", "series_table", "series_rate",
+                              "pool_dynamics", "backtest", "forecast"), ("audit",), audit),
+        Step("core", "NU", ("fine_table", "forecast_units", "rated_units", "series_table", "series_rate",
                             "series_estimate", "pool_dynamics", "backtest", "forecast", "time_series_rows", "time_series",
                             "forecast_total", "ladder", "audit", "series_exam"), ("core", "core_legend", "forecast_series"), core),
         Step("power_bi", "22", ("core",), ("power_bi",),
@@ -389,6 +405,6 @@ def sff_steps() -> list:
         Step("validation", "18", ("raw_extract", "backtest", "fine_table", "forecast", "forecast_units", "pool_reference",
                                   "series_exam", "series_estimate", "time_series_rows", "core"), ("validation",),
              lambda context: {"validation": validate_chain(context["raw_extract"], context.results(), context.configuration)}),
-        Step("report", "IN", report_reads, ("card",),
-             lambda context: {"card": build_report(context["raw_extract"], context.results(), context.configuration)}),
+        Step("report", "IN", report_reads, ("report",),
+             lambda context: {"report": build_report(context["raw_extract"], context.results(), context.configuration)}),
     ]

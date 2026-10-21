@@ -50,7 +50,7 @@ con ese ruido. Una predicción perfecta se equivoca, de media, en torno a 0,8 σ
   ajustado al azar.
 
 Por eso el intervalo que se da a negocio nunca puede ser más estrecho que la banda de ruido de la serie. Y por eso el
-examen mide el error en unidades de ruido (`err_norm` = error / σ en `sff_series_backtest`): un |err_norm| cercano a 1 es
+examen mide el error en unidades de ruido (`err_norm` = error / σ en `sff_backtest_predicciones`): un |err_norm| cercano a 1 es
 acertar al límite.
 
 **La consecuencia para negocio, la más útil.** El ruido baja con la raíz del tamaño:
@@ -164,10 +164,8 @@ Si la composición tiene menos de 271 contratos al mes (`own_rate_floor`), toma 
 
 | Tabla | Una fila por | Para qué |
 |---|---|---|
-| `sff_dimension_levels` | dimensión × grupo | los grupos generados de `level_1`, con su tasa estandarizada por año |
 | `sff_ladder_steps` | serie × pasada | su id, el soporte de su grupo y si ya tiene composición |
 | `sff_ladder_summary` | pasada | ids, mediana de soporte, unidades (iguales en todas), % USD con soporte |
 | `sff_ladder_merges` | serie × fusión | grupo antes y después, sesgo, error sola y junta, y si mejora |
 | `sff_composition_members` | composición × serie | todas las series de su tasa, con su papel (`uses` / `lends`) |
-| `sff_ladder_groups` | serie estimable | composición, pasada, series en la tasa, series que la usan, soporte, tasa, referencia |
 | `sff_forecast_series` | forecast serie | las 4 etapas (`s10_stage*`) y la credibilidad (`s11_*`): ver `DOC_modelo_datos.md` |

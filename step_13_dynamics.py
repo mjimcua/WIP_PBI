@@ -30,18 +30,16 @@ Actions (logged as they are done):
   2. φ, trend and seasonality of every pool
   3. the month profile of the whole portfolio
   4. check the attributes                                            checks 1-2
-  5. write the pools' dynamics and the portfolio's profile           checks 3-4
-  6. count the checks; stop if any failed
-  7. show the general verdict: the portfolio's profile and how many pools (and how much money)
+  5. count the checks; stop if any failed
+  6. show the general verdict: the portfolio's profile and how many pools (and how much money)
      show a trend, a season, φ > 1
 
 Checks (logged as they are made, numbered, at the level of their status):
    1. every pool measured has its attributes (φ ≥ 0, p-values between 0 and 1)
    2. the portfolio profile covers the 12 calendar months
-   3-4. tables sff_composition_dynamics and sff_estacionalidad_cartera written and read back
 
-Output: (the dynamics of every pool, the month profile of the portfolio) · tables
-sff_composition_dynamics, sff_estacionalidad_cartera.
+Output: (the dynamics of every pool, the month profile of the portfolio), in memory: they reach the
+forecast series dimension (s13_*) and the report.
 """
 
 # ─── imports ─────────────────────────────────────────────────────────────────────
@@ -50,8 +48,7 @@ import pandas as pd
 from scipy import stats
 
 from config import Config
-from vocabulario import (CALENDAR_ROLE_COLUMN, COMPOSITION_ID_COLUMN, GATE_LEVEL, TABLE_POOL_DYNAMICS,
-                         TABLE_PORTFOLIO_SEASONALITY, TRUTH_ROLES)
+from vocabulario import CALENDAR_ROLE_COLUMN, COMPOSITION_ID_COLUMN, GATE_LEVEL, SYNTHETIC_COLUMN, TRUTH_ROLES
 
 
 # ─── the step ────────────────────────────────────────────────────────────────────
@@ -64,18 +61,20 @@ STEP_ACTIONS = ["the pools measured: support and history",
                 "φ, trend and seasonality of every pool",
                 "the month profile of the whole portfolio",
                 "check the attributes (checks 1-2)",
-                "write the pools' dynamics and the portfolio's profile (checks 3-4)",
                 "count the checks; stop if any failed",
                 "show the general verdict: the portfolio's profile and how many pools show a trend, a season, φ > 1"]
-STEP_OUTPUT = "one row per pool (φ, trend, season, months high/low) · the portfolio's month profile · tables sff_composition_dynamics, sff_estacionalidad_cartera"
+STEP_OUTPUT = "one row per pool (φ, trend, season, months high/low) · the portfolio's month profile (in memory)"
 
 # ─── named constants ─────────────────────────────────────────────────────────────
 PERCENTAGE_POINTS = 100
 MONTHS_PER_YEAR = 12
 
 
-def measure_dynamics(pool_series: pd.DataFrame, pool_reference: pd.DataFrame, configuration: Config) -> tuple:
-    """φ, trend and seasonality of every pool with support, and the portfolio's month profile."""
+def measure_dynamics(pool_series: pd.DataFrame, pool_reference: pd.DataFrame, configuration: Config,
+                     rated_units: pd.DataFrame = None) -> tuple:
+    """φ, trend and seasonality of every pool with support, and the portfolio's month profile. The portfolio is
+    every real closed unit of rated_units (step 08) once: summing the compositions would count twice the series that
+    lend their history to a composition they do not use."""
     configuration.log_step_start(STEP_LABEL, STEP_NAME, STEP_PURPOSE, STEP_ACTIONS, STEP_OUTPUT)
     check_log = []
     period_column = configuration.period_col
@@ -102,8 +101,15 @@ def measure_dynamics(pool_series: pd.DataFrame, pool_reference: pd.DataFrame, co
                                             f"{int((pool_dynamics['tendencia'] != 0).sum())} with a trend"
                              if len(pool_dynamics) else "no pool to measure")
 
-    # [3] the portfolio: every estimable series summed, its month profile
-    portfolio_monthly = (truth_months.groupby(period_column)[["renovadas", "vencen"]].sum().reset_index())
+    # [3] the portfolio: every series once, its month profile
+    if rated_units is not None:
+        real_closed = rated_units[(rated_units[SYNTHETIC_COLUMN] == 0) & rated_units[CALENDAR_ROLE_COLUMN].isin(TRUTH_ROLES)
+                                  & (rated_units[configuration.pipeline_units_col] > 0)]
+        portfolio_monthly = (real_closed.groupby(period_column)
+                             .agg(renovadas=(configuration.renewed_units_col, "sum"), vencen=(configuration.pipeline_units_col, "sum"))
+                             .reset_index())
+    else:
+        portfolio_monthly = truth_months.groupby(period_column)[["renovadas", "vencen"]].sum().reset_index()
     portfolio = dynamics_of_one_series(portfolio_monthly, period_column, configuration)
     portfolio_profile = pd.DataFrame(portfolio.pop("_profile"))
     configuration.log_action(STEP_LABEL, 3, f"portfolio: φ {portfolio['phi']:.2f} · month effect p = {portfolio['p_valor_mes']:.3f} · "
@@ -123,13 +129,8 @@ def measure_dynamics(pool_series: pd.DataFrame, pool_reference: pd.DataFrame, co
                             len(portfolio_profile) == MONTHS_PER_YEAR,
                             failure_detail=f"only {len(portfolio_profile)} calendar months")
 
-    # [5] the tables
-    configuration.log_action(STEP_LABEL, 5, "writing the pools' dynamics and the portfolio's profile")
-    configuration.write_table(STEP_LABEL, check_log, pool_dynamics, TABLE_POOL_DYNAMICS)
-    configuration.write_table(STEP_LABEL, check_log, portfolio_profile, TABLE_PORTFOLIO_SEASONALITY)
-
-    # [6] the count of the checks; stop if anything failed
-    configuration.log_action(STEP_LABEL, 6, "counting the checks")
+    # [5] the count of the checks; stop if anything failed
+    configuration.log_action(STEP_LABEL, 5, "counting the checks")
     configuration.log_check_summary(STEP_LABEL, STEP_NAME, check_log)
 
     # [7] the general verdict
@@ -212,10 +213,10 @@ def dynamics_of_one_series(monthly: pd.DataFrame, period_column: str, configurat
 
 def log_dynamics_report(pool_dynamics: pd.DataFrame, portfolio: dict, portfolio_profile: pd.DataFrame,
                         configuration: Config) -> None:
-    """Action 7: the general verdict, as tables."""
+    """Action 6: the general verdict, as tables."""
     verdict = ("the portfolio rate HAS a month effect beyond noise" if portfolio["estacional"]
                else "the portfolio rate shows NO month effect beyond noise")
-    configuration.log_action(STEP_LABEL, 7, f"general verdict: {verdict} (p = {portfolio['p_valor_mes']:.3f}, amplitude "
+    configuration.log_action(STEP_LABEL, 6, f"general verdict: {verdict} (p = {portfolio['p_valor_mes']:.3f}, amplitude "
                                             f"{portfolio['amplitud_pp']:.1f} pp, consistency between halves "
                                             f"{portfolio['consistencia']:.2f}). Month profile of the portfolio (efecto_pp: "
                                             f"the month minus the year, without trend):")

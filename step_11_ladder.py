@@ -23,9 +23,9 @@ THE RISK LEVEL: how the rate was obtained, by the pass where the group of the se
   B  merged in the sign or extra passes: its group shares EVERY mandatory dim with it
   C  merged in a mandatory pass (a mandatory dim collapsed), or never reached the floor
   S  signed and its group never reached the floor
-  M  mixed signs: never merged · D solo_futuro · N solo_historia · T time_series universe
+  M  mixed signs: never merged · D solo_futuro · N solo_historia
 
-Series that are not estimable (solo_historia, solo_futuro, time_series, mixto) get their row
+Series that are not estimable (solo_historia, solo_futuro, mixto) get their row
 too: their own group, their own rate if they have one, and their level.
 
 Actions (logged as they are done):
@@ -43,10 +43,11 @@ Checks (logged as they are made, numbered, at the level of their status):
    2. every series of a group has the same estimated rate
    3. every estimated rate and every z is between 0 and 1
    4. the prediction error is never below the estimation error
-   5-6. tables sff_series_estimacion and sff_niveles_riesgo written and read back
+   5. table sff_niveles_riesgo written and read back
 
 Output: one row per series with its final group, reference, k, z, estimated rate, two errors
-and risk level · the money by risk level · tables sff_series_estimacion, sff_niveles_riesgo.
+and risk level (in memory: it reaches the forecast series dimension) · the money by risk level ·
+table sff_niveles_riesgo.
 """
 
 # ─── imports ─────────────────────────────────────────────────────────────────────
@@ -56,9 +57,8 @@ import pandas as pd
 from config import Config
 from vocabulario import (COMPOSITION_ID_COLUMN, LEVEL_BORROWED, LEVEL_FAR, LEVEL_MIXED, LEVEL_NO_HISTORY,
                          LEVEL_NO_IMPACT, LEVEL_OWN, LEVEL_OWN_REINFORCED, LEVEL_OWN_SHORT, LEVEL_SIGNED_UNDER_FLOOR,
-                         LEVEL_TIME_SERIES, ROUTE_COLUMN, ROUTE_FUTURE_ONLY, ROUTE_HISTORY_ONLY, SERIES_ID_COLUMN,
-                         SIGN_COLUMN, SIGN_MIXED, SIGN_NEUTRAL, TABLE_RISK_LEVELS, TABLE_SERIES_ESTIMATE,
-                         UNIVERSE_COLUMN, UNIVERSE_NORMAL)
+                         ROUTE_COLUMN, ROUTE_FUTURE_ONLY, ROUTE_HISTORY_ONLY, SERIES_ID_COLUMN,
+                         SIGN_COLUMN, SIGN_MIXED, SIGN_NEUTRAL, TABLE_RISK_LEVELS)
 
 
 STEP_LABEL = "11"
@@ -71,11 +71,11 @@ STEP_ACTIONS = ["the final group and the reference of every estimable series (st
                 "the rate and the two errors of every series (the others: their own rate, if any)",
                 "the risk level of every series",
                 "check the rates and the errors (checks 1-4)",
-                "write the estimate of every series and the money by level (checks 5-6)",
+                "write the money by level (check 5)",
                 "count the checks; stop if any failed",
                 "show the money by risk level and what each level means, as tables"]
 STEP_OUTPUT = ("one row per series: final group, reference, k, z, estimated rate, se_estimacion, se_prediccion, risk level · "
-               "the money by level · tables sff_series_estimacion, sff_niveles_riesgo")
+               "the money by level · table sff_niveles_riesgo")
 
 PERCENTAGE_POINTS = 100
 
@@ -90,7 +90,6 @@ LEVEL_DEFINITIONS = [
     (LEVEL_MIXED, "flags of both signs", "never merged: keeps its own rate; should be ≈ 0"),
     (LEVEL_NO_HISTORY, ROUTE_FUTURE_ONLY, "no rate to estimate: it will take a rate from its cell later"),
     (LEVEL_NO_IMPACT, ROUTE_HISTORY_ONLY, "nothing to predict: kept for the groups and the backtest"),
-    (LEVEL_TIME_SERIES, "time_series universe", "labelled only: treated apart"),
 ]
 
 
@@ -140,9 +139,8 @@ def climb_the_ladder(series_rate: pd.DataFrame, ladder: dict, configuration: Con
     check_ladder(series_estimate, series_rate, configuration, check_log)
 
     # [6] the tables, written
-    configuration.log_action(STEP_LABEL, 6, "writing the estimate of every series and the money by level")
+    configuration.log_action(STEP_LABEL, 6, "writing the money by level")
     money_by_level = risk_levels_report(series_estimate)
-    configuration.write_table(STEP_LABEL, check_log, series_estimate, TABLE_SERIES_ESTIMATE)
     configuration.write_table(STEP_LABEL, check_log, money_by_level, TABLE_RISK_LEVELS)
 
     # [7] the count of the checks; stop if anything failed
@@ -161,8 +159,9 @@ def climb_the_ladder(series_rate: pd.DataFrame, ladder: dict, configuration: Con
 def credibility_k_detail(groups: pd.DataFrame, configuration: Config) -> pd.DataFrame:
     """Bühlmann-Straub k per credibility reference, with the numbers it is made of, from the
     compositions that share the reference (one row per composition):
-      within  = mean of p(1 − p): how much a composition's rate moves by chance
-      between = weighted variance of p minus its sampling part: how much the compositions differ for real
+      within  σ² = Σ w·p(1 − p) / Σ w: how much a composition's rate moves by chance (per unit due)
+      between a  = (Σ w (p − p̄)² − (r − 1) σ²) / (W − Σ w² / W): how much the compositions differ for real
+                   (the unbiased Bühlmann-Straub estimator; r compositions, w their support, W = Σ w)
       k = within / between · source 'estimated'
       fewer than 3 compositions: k_cred · source 'default'
       no real difference between them: 10 × k_cred (they take the reference's rate) · source 'homogeneous'"""
@@ -177,13 +176,18 @@ def credibility_k_detail(groups: pd.DataFrame, configuration: Config) -> pd.Data
     grouped = siblings.groupby("credibility_ref_id")
     pooled_rate = grouped["_wp"].sum() / grouped["_w"].sum()
     siblings["_pooled"] = siblings["credibility_ref_id"].map(pooled_rate)
-    siblings["_within"] = rates * (1 - rates)
+    siblings["_w_within"] = weights * rates * (1 - rates)
     siblings["_w_sq_dev"] = weights * (rates - siblings["_pooled"]) ** 2
-    siblings["_w_sampling"] = weights * rates * (1 - rates) / np.maximum(weights, 1)
+    siblings["_w_squared"] = weights ** 2
     grouped = siblings.groupby("credibility_ref_id")
-    detail = pd.DataFrame({"compositions_using": grouped.size(),
-                           "within_variance": grouped["_within"].mean(),
-                           "between_variance": (grouped["_w_sq_dev"].sum() - grouped["_w_sampling"].sum()) / grouped["_w"].sum()})
+    compositions = grouped.size()
+    total_weight = grouped["_w"].sum()
+    within = grouped["_w_within"].sum() / total_weight
+    effective_weight = total_weight - grouped["_w_squared"].sum() / total_weight
+    detail = pd.DataFrame({"compositions_using": compositions,
+                           "within_variance": within,
+                           "between_variance": (grouped["_w_sq_dev"].sum() - (compositions - 1) * within)
+                                               / effective_weight.where(effective_weight > 0)})
     has_between = detail["between_variance"] > configuration.min_between_variance
     detail["k"] = np.where(has_between, detail["within_variance"] / detail["between_variance"].where(has_between),
                            configuration.homogeneous_pool_factor * configuration.k_cred)
@@ -214,7 +218,6 @@ def estimate_rates(series_rate: pd.DataFrame, groups: pd.DataFrame, k_by_referen
     estimate.loc[not_estimable, "group_rate"] = estimate.loc[not_estimable, "tasa_propia"]
     estimate["final_step"] = estimate["final_step"].astype(int)
     estimate["group_series"] = estimate["group_series"].astype(int)
-    estimate[COMPOSITION_ID_COLUMN] = estimate[COMPOSITION_ID_COLUMN]
 
     group_rate, group_support = estimate["group_rate"], estimate["group_support"].fillna(0.0)
     reference_rate, reference_support = estimate["ref_rate"], estimate["ref_support"]
@@ -241,14 +244,13 @@ def estimate_rates(series_rate: pd.DataFrame, groups: pd.DataFrame, k_by_referen
 
 
 def risk_levels(estimate: pd.DataFrame, step_names: dict, configuration: Config) -> np.ndarray:
-    """The risk level of every series: route and universe first, then sign, then whether the group
+    """The risk level of every series: route first, then sign, then whether the group
     reached the floor, then the pass where its group was formed. The first condition that holds wins."""
     formed_in = estimate["final_step"].map(step_names).fillna("itself")
     merged_close = formed_in.str.startswith("sign") | formed_in.str.startswith("extra")
     itself = estimate["final_step"] == 0
     conditions = [
         estimate[ROUTE_COLUMN] == ROUTE_HISTORY_ONLY,
-        estimate[UNIVERSE_COLUMN] != UNIVERSE_NORMAL,
         (estimate[ROUTE_COLUMN] == ROUTE_FUTURE_ONLY) | (estimate["meses_historia"] == 0),
         estimate[SIGN_COLUMN] == SIGN_MIXED,
         (estimate["alcanzo_suelo"] == 0) & (estimate[SIGN_COLUMN] != SIGN_NEUTRAL),
@@ -258,7 +260,7 @@ def risk_levels(estimate: pd.DataFrame, step_names: dict, configuration: Config)
         itself & (estimate["group_support"] >= configuration.own_rate_floor),
         itself,
         merged_close]
-    levels = [LEVEL_NO_IMPACT, LEVEL_TIME_SERIES, LEVEL_NO_HISTORY, LEVEL_MIXED, LEVEL_SIGNED_UNDER_FLOOR, LEVEL_FAR,
+    levels = [LEVEL_NO_IMPACT, LEVEL_NO_HISTORY, LEVEL_MIXED, LEVEL_SIGNED_UNDER_FLOOR, LEVEL_FAR,
               LEVEL_OWN, LEVEL_OWN_SHORT, LEVEL_OWN_REINFORCED, LEVEL_BORROWED]
     return np.select(conditions, levels, default=LEVEL_FAR)
 

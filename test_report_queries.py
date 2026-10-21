@@ -50,10 +50,12 @@ def test_every_query() -> None:
     check(same(roles, by_role, ["rol"], ["filas", "unidades_vencen", "unidades_renovadas"]), "step 02: the calendar per role")
 
     calendar = pd.read_sql(calendar_query(configuration), engine)
-    written = pd.read_sql(f"SELECT * FROM {table_in_sql(configuration, 'calendario')}", engine)
-    check(same(calendar, written, ["period"], ["filas", "unidades_vencen", "usd_vence", "unidades_renovadas", "usd_renovado",
-                                               "s0_renovados_unidades", "s0_renovados_usd"]),
-          "step 02: the calendar per month (sff_calendario)")
+    by_month = (fine.assign(period=fine["period"].astype(str)).groupby("period")
+                .agg(filas=("rol", "size"), unidades_vencen=("total_tr_units", "sum"), usd_vence=("total_tr_usd", "sum"),
+                     s0_renovados_unidades=("s0_renovados_unidades", "sum"), s0_renovados_usd=("s0_renovados_usd", "sum"))
+                .reset_index())
+    check(same(calendar, by_month, ["period"], ["filas", "unidades_vencen", "usd_vence", "s0_renovados_unidades", "s0_renovados_usd"]),
+          "step 02: the calendar per month")
 
     total = pd.read_sql(forecast_total_query(configuration), engine)
     check(same(total, results["forecast_total"], ["ano", "origen"], ["usd_vence", "usd_renovado"]),

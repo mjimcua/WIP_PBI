@@ -5,13 +5,13 @@ The forecast (step 17), the exam of every forecast series (step 19) and the audi
 predict the rate of a forecast series the same way, so they all call these functions:
 
   1. predict_composition   the technique of the composition predicts its rate h months ahead
-                           (falls back to the challenger when the technique cannot predict)
+                           (falls back to the default technique when the technique cannot predict)
   2. credibility_shift     a composition below own_rate_floor moves its prediction toward its
                            credibility reference: (1 − z) × (logit reference level − logit
                            composition level); 0 when z = 1 or a level is missing
   3. shifted_rate          the prediction with the shift applied: the rate of the forecast series
   4. band_quantiles        the error quantiles of the technique at the horizon (step 14; the
-                           nearest judged horizon beyond them; the challenger's, then ±z, if missing)
+                           nearest judged horizon beyond them; the default technique's, then ±z, if missing)
   5. rate_band             the interval of the rate: rate + quantile × binomial error with the
                            units due of the forecast series, clipped to [0, 1]
   6. levels_at_origins     the level (Σ renewed / Σ due) of every key with only what was known at
@@ -40,12 +40,12 @@ def apply_configuration(configuration: Config) -> None:
 
 
 def predict_composition(history_logit: np.ndarray, calendar_months: np.ndarray, technique: str, horizon: int,
-                        challenger: str) -> tuple:
-    """(technique used, predicted rate) of a composition h months ahead; the challenger when the
+                        default_technique: str) -> tuple:
+    """(technique used, predicted rate) of a composition h months ahead; the default technique when the
     technique cannot predict (too short a history, a failed fit)."""
     predicted = predict_logit(technique, history_logit, calendar_months, int(horizon))
     if not np.isfinite(predicted):
-        technique = challenger
+        technique = default_technique
         predicted = predict_logit(technique, history_logit, calendar_months, int(horizon))
     return technique, (float(inverse_logit(predicted)) if np.isfinite(predicted) else np.nan)
 
@@ -83,7 +83,7 @@ def judged_horizon(horizon: int, judged: list) -> int:
 
 def band_quantiles(bands: pd.DataFrame, techniques, horizons, configuration) -> tuple:
     """(q_low, q_high) of every (technique, horizon): the technique's quantiles at its judged horizon
-    (itself, the next one above, or the last); the challenger's if the technique has none; ±z if neither has."""
+    (itself, the next one above, or the last); the default technique's if the technique has none; ±z if neither has."""
     table = bands.set_index(["tecnica", "h"])
     # plain dicts, built once: a lookup per row in a dict costs ~0.1 µs; on the MultiIndex of a Series it
     # costs tens of µs, and close to a millisecond when the key is missing (it goes through an exception)
@@ -91,7 +91,7 @@ def band_quantiles(bands: pd.DataFrame, techniques, horizons, configuration) -> 
     high_of_key = table["q_high_norm"].to_dict()
     judged = list(configuration.backtest_horizons)
     keys = [(technique, judged_horizon(int(horizon), judged)) for technique, horizon in zip(techniques, horizons)]
-    fallbacks = [(configuration.challenger_technique, judged_h) for _, judged_h in keys]
+    fallbacks = [(configuration.default_technique, judged_h) for _, judged_h in keys]
     q_low = np.array([low_of_key.get(key, low_of_key.get(fallback, -configuration.z))
                       for key, fallback in zip(keys, fallbacks)], dtype=float)
     q_high = np.array([high_of_key.get(key, high_of_key.get(fallback, configuration.z))

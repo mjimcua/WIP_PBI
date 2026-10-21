@@ -18,8 +18,6 @@ erDiagram
     sff_forecast_series ||--o{ sff_series_exam_detail : "s03_fs_id = fs_id"
     sff_forecast_series ||--o{ sff_ladder_steps : "s03_fs_id = fs_id"
     sff_forecast_series ||--o{ sff_ladder_merges : "s03_fs_id = fs_id"
-    sff_forecast_series ||--o{ sff_series_backtest : "s03_fs_id = fs_id"
-    sff_forecast_series ||--o{ sff_series_technique_summary : "s03_fs_id = fs_id"
     sff_forecast_series }o--|| sff_composition : "s10_stage3_id = id"
     sff_composition ||--o{ sff_composition_members : "composition_id"
     sff_composition ||--o{ sff_composition_techniques : "composition_id"
@@ -38,7 +36,7 @@ Una fila por registro: las filas del extracto, los huecos (meses sin vencimiento
 | Dimensiones y mes | las del extracto, `period` | el grano fino |
 | Medidas | `s00_*`, `s02_*` | lo que vence y renueva, antes y después del calendario |
 | Ids | `s03_fs_id`, `s03_fu_id`, `s03_uplift_cell_id` | la forecast serie (clave de la dimensión), la unidad y la celda de precio |
-| Unidad | `s04_filas_finas`, `s07_moe_pp_max` | el detalle de la forecast unit |
+| Unidad | `s04_filas_finas` | el detalle de la forecast unit |
 | Forecast | `s17_*`, `s17_confidence` | tasa, banda, uplift, esperado y confianza de cada fila futura |
 | Final | `forecast_*` | lo que se suma para responder: renovado real y previsto, pipeline, por año y origen |
 | Final, reparto de las marcas | `forecast_maturation_units_moved`, `forecast_renewed_units_maturation_adj`, `forecast_renewed_USD_maturation_adj` (de `distribute_marks`) | el forecast YA lleva repartidas las marcas negativas que aún no han llegado (softcancel, dormant, not_installed): por grupo (todas las dimensiones salvo las timevarying) y mes, la mezcla de combinaciones de marcas converge a la del mismo mes histórico; las unidades pasan de neutral a marcada (una marca solo crece) y renuevan a la tasa histórica de su combinación. Estas columnas son la parte del forecast debida al reparto: `forecast_renewed_USD − forecast_renewed_USD_maturation_adj` = el forecast con las marcas de hoy (también en `s17_esperado_usd_base`). Se reparten también las filas proyectadas y simuladas. Tabla `sff_forecast_maduracion`: mes a mes, cada marca hoy, esperada y en su proporción final histórica (`<marca>_final`, la que lee el detector de marcas por encima de su proporción final), tasa base y final, ajuste y los dos vasos |
@@ -55,7 +53,7 @@ Una fila por campo de la Config: `valor` en esta ejecución, `por_defecto`, `cam
 - `sff_uplift_homogeneidad` (paso 15, solo con la base exacta): una fila por celda de uplift con renovadores. `ratio_seleccion` = precio medio que vencía de los renovadores / precio medio de la celda: a 1, los renovadores valían la media y la aproximación antigua era exacta; por encima, renuevan más los caros y la aproximación inflaba el uplift en ese ratio (`uplift_aproximado = uplift_exacto × ratio_seleccion`). Donde se aleja de 1, la celda mezcla precios: la respuesta es segmentar mejor, no añadir un factor al forecast.
 - `sff_price_increase_monitor` (paso 22): una fila por **grupo de precio** (`price_group_dims`: región en sus tres niveles × producto level_1, porque las tarifas cambian así) y mes cerrado de pipeline; con `renewed_USD` y `uplift_base_USD` para sumar grupos en Power BI, y el detector solo en meses con ≥ `price_group_min_renewed_units` renovaciones.
 - `sff_price_increase_calendar` (paso 22): una fila por subida detectada: grupo, mes de inicio, escalón, uplift antes y durante el ciclo, USD renovado que tocó. Para contrastarlo con el calendario real de tarifas.
-- El uplift de `sff_uplift_celda` (paso 15) es el de la **ventana reciente** (`uplift_window_months`, 12 por defecto) **sin las subidas** detectadas (`uplift_without_increases`): los meses de la ventana dentro del ciclo de una subida de su grupo se deflactan por ella. En `sff_forecast`, `factor_subida` es el factor con que cada fila futura la recupera mientras su mes sigue dentro del ciclo (1 fuera de él, y en la vía contrato); el uplift de la fila ya lo lleva. El detector (`price_increases.py`) es el mismo para los pasos 15, 16 y 22.
+- El uplift de `sff_uplift_celda` (paso 15) es el de la **ventana reciente** (`uplift_window_months`, 12 por defecto) **sin las subidas** detectadas (`uplift_without_increases`): los meses de la ventana dentro del ciclo de una subida de su grupo se deflactan por ella. En el núcleo (`s17_factor_subida`), `factor_subida` es el factor con que cada fila futura la recupera mientras su mes sigue dentro del ciclo (1 fuera de él, y en la vía contrato); el uplift de la fila ya lo lleva. El detector (`price_increases.py`) es el mismo para los pasos 15, 16 y 22.
 - (antes) el monitor era una fila por mes de toda la cartera. El uplift de todos y el de las renovaciones isolated (el detector: sin descuentos de retención), la media de los 12 meses anteriores, el escalón frente a ella, `above_threshold` (escalón ≥ 3 %), `price_increase_flag` (primer mes de una racha de ≥ 3 meses seguidos por encima: un mes suelto es ruido, no una subida), `in_increase_cycle` y `months_since_increase`. El uplift isolated usa su base exacta (`forecast_isolated_to_renew_USD_renewed`) cuando está; con la dispersión, además `desv_isolated`, `share_isolated_near_100` ([0,95, 1,05)) y `share_isolated_ge110`. Cada métrica del monitor necesita solo sus columnas. Una subida afecta a las renovaciones de UN ciclo (quien renueva paga la tarifa nueva contra la vieja; un año después todo lo que vence ya compró a la nueva), así que el ciclo dura 12 meses y se apaga.
 
 ## La dimensión: `sff_forecast_series`
@@ -87,7 +85,7 @@ Una fila por forecast serie. Es la tabla que se filtra en Power BI.
 |---|---|
 | Soporte por etapa (raw → composición) | `s10_stage0_support` … `s10_stage3_support` de la dimensión |
 | Error del raw frente al de la estimación | `s08_error_binomial_pp` frente a `s11_se_prediccion_pp` |
-| Examen mes a mes: real, raw, framework y hoja, con el intervalo | `sff_series_exam_detail` (una fila por mes × horizonte × método) |
+| Examen mes a mes: real, baseline, raw, por_defecto y framework, con el intervalo y en USD | `sff_series_exam_detail` (una fila por mes × horizonte × método) |
 | Cómo se formó su composición | `sff_ladder_steps` y `sff_ladder_merges` (sesgo, error sola y junta) |
 | Quién entra en la tasa de su composición | `sff_composition_members` (`uses` / `lends`) |
 
@@ -118,7 +116,7 @@ Power BI solo relacione y sume, sin lógica dentro del informe.
 
 | Tabla | Una fila por | Clave | Para qué |
 |---|---|---|---|
-| `sff_series_exam_detail` | forecast serie × mes de examen × horizonte × método | `fs_id` | cada predicción del examen (raw, framework, hoja), trazada: tasa de la composición, desplazamiento por credibilidad, tasa, intervalo, real, error y su ruido binomial (`noise_pp`) |
+| `sff_series_exam_detail` | forecast serie × mes de examen × horizonte × método | `fs_id` | cada predicción del examen (baseline, raw, por_defecto, framework), trazada: tasa de la composición, desplazamiento por credibilidad, tasa, intervalo, real, error y su ruido binomial (`noise_pp`); y en USD (`pred_usd`, `real_usd`, `err_usd`: unidades × el precio de sus renovaciones reales, el mismo para todos los métodos) |
 | `sff_series_exam` | forecast serie | `fs_id` | el examen resumido por método, raw y framework lado a lado (la dimensión lo lleva) |
 | `sff_ladder_steps` | forecast serie × pasada | `fs_id` | su id en cada pasada, el soporte de su grupo y si ya tiene composición |
 | `sff_ladder_merges` | forecast serie × fusión | `fs_id` | grupo antes y después, sesgo, error sola y junta, y si la fusión mejora |
@@ -130,10 +128,6 @@ Power BI solo relacione y sume, sin lógica dentro del informe.
 | `sff_credibility` | referencia de credibilidad | `s11_credibility_ref_id` | soporte, tasa, k y sus partes |
 | `sff_credibility_members` | referencia × forecast serie | `credibility_ref_id` | qué series entran en la tasa de la referencia: `borrower` (se apoya en ella) o `lender` (solo aporta datos) |
 | `sff_series_dynamics` | forecast serie | `fs_id` | φ, tendencia y estacionalidad de la propia serie, y si son medibles |
-| `sff_series_backtest` | forecast serie × mes de examen × horizonte × técnica | `fs_id` | cada técnica aplicada a la forecast serie, con su intervalo |
-| `sff_series_technique_summary` | forecast serie × tramo × técnica | `fs_id` | error medio, sesgo, WAPE, ranking en la serie, elegida, mejor para la serie |
-| `sff_dimension_levels` | dimensión × grupo | — | los grupos generados de `level_1` (paso 01), con su tasa estandarizada por año |
-| `sff_dimension_level_values` | dimensión × valor | — | cada valor de una dimensión con nivel generado: su grupo, soporte, tasa, ruido y años |
 
 ## Los informes agregados no son tablas
 
@@ -145,7 +139,24 @@ que lo calcula imprime esa consulta (`report_queries.py`), y los tests comprueba
 - el examen por método y horizonte, y por mes (paso 19), desde `sff_series_exam_detail`;
 - el total por año y origen (paso 20), desde `sff_nucleo`.
 
-`sff_calendario`, `sff_examen_cartera(_resumen)` y `sff_forecast_total` todavía se escriben, aunque tengan su consulta.
+`sff_examen_cartera(_resumen)` y `sff_forecast_total` todavía se escriben, aunque tengan su consulta (el explorador las lee).
+
+## Lo que NO se escribe (20-oct-2026)
+
+Se calcula en memoria y llega a `sff_nucleo`, a `sff_forecast_series` o al informe, pero no es una tabla SQL propia:
+nadie la leía y no está en el modelo de Power BI. Si al pintar el Power BI completo hace falta alguna, se vuelve a
+escribir.
+
+- **Pasos quitados:** el 05 (lookups id ↔ clave hash: el núcleo y Power BI unen por el id en texto) y el 07 (cota de
+  soporte por unidad: nadie comparaba contra ella). Con ellos, las claves hash (`fs_key`, `fu_key`, `uplift_cell_key`,
+  `fila_key`) y la columna `universo` (siempre `normal` desde que el paso 01 separa el time_series).
+- **Tablas que ya no se escriben:** `sff_fact_fine` y `sff_fact_fu` (03, 04), `sff_calendario` (02),
+  `sff_dimension_levels` y `sff_dimension_level_values` (01: el JSON de niveles es el registro), `sff_series` (06),
+  `sff_fu_huecos` y `sff_series_tasa` (08), `sff_decision_eta2_pares` (09, quitada del todo), `sff_ladder_groups` (10),
+  `sff_series_estimacion` (11), `sff_composition_dynamics` y `sff_estacionalidad_cartera` (13), `sff_dim_tecnica` (14),
+  `sff_forecast` (17), `sff_time_series` (20), `sff_ficha_serie` (informe, quitada del todo).
+- **Del paso AUD:** `sff_series_backtest` y `sff_series_technique_summary`. Repetían el examen de cada serie que ya hace
+  el paso 19 (`sff_series_exam`, `sff_series_exam_detail`); su único control era comprobar que coincidían.
 
 ## Las sumas de comprobación
 
@@ -184,7 +195,7 @@ que lo calcula imprime esa consulta (`report_queries.py`), y los tests comprueba
 4. **Su composición** (`s10_stage3_id` → `sff_composition` y `sff_composition_members`): quién entra en su tasa y quién la usa.
 5. **Las técnicas** (`sff_composition_techniques`, `sff_composition_forecast_all`): las probadas, las descartadas y por qué, y lo que habría dado cada una.
 6. **La credibilidad** (`s11_credibility_ref_id` → `sff_credibility` y sus miembros): cuánto pesa la referencia y por qué ese k.
-7. **El examen** (`sff_series_exam_detail`): cada predicción, mes a mes, de los tres métodos, con su intervalo.
+7. **El examen** (`sff_series_exam_detail`): cada predicción, mes a mes, de los cuatro métodos, con su intervalo y en USD.
 8. **Su dinámica** (`sff_series_dynamics`): si tiene tendencia o estacionalidad propia, y si es medible.
 
 ## El explorador en el notebook (`sff_explorer.py`)
@@ -207,8 +218,8 @@ explorer.show_page("ficha", fs_id="...")                       # una página est
 | 2 · Forecast series | dónde está el dinero, con qué confianza y cuánto se equivocó cada serie; por nivel de riesgo | `sff_forecast_series` |
 | 3 · Ficha de serie | las siete preguntas de una serie: historia, examen, técnicas, dinero, escalera, composición, filas futuras | `sff_nucleo`, `sff_series_exam_detail`, `sff_composition_techniques`, `sff_ladder_steps`, `sff_ladder_merges`, `sff_composition_members`, `sff_pool_serie`, `sff_series_dynamics` |
 | 4 · Escalera | cómo se mejoró el soporte: paso a paso, por etapa, cada fusión y si mejoró, el orden de colapso, cualquier composición | `sff_ladder_summary`, `sff_forecast_series`, `sff_niveles_riesgo`, `sff_ladder_merges`, `sff_decision_eta2`, `sff_composition` |
-| 5 · Backtest y técnica | qué técnica predice cuánto dinero y por qué ganó; elegida frente al retador; error del total por mes; bandas; el backtest de cualquier composición | `sff_decision_tecnica`, `sff_backtest_examen`, `sff_backtest_examen_total`, `sff_decision_bandas`, `sff_backtest_predicciones` |
-| 6 · Examen | framework, serie sola y hoja en los mismos meses; error frente al ruido; si la etiqueta de confianza dice la verdad | `sff_examen_cartera(_resumen)`, `sff_series_exam`, `sff_forecast_series` |
+| 5 · Backtest y técnica | qué técnica predice cuánto dinero y por qué ganó; elegida frente a la técnica por defecto; error del total por mes; bandas; el backtest de cualquier composición | `sff_decision_tecnica`, `sff_backtest_examen`, `sff_backtest_examen_total`, `sff_decision_bandas`, `sff_backtest_predicciones` |
+| 6 · Examen | de la baseline al framework en los mismos meses; error frente al ruido; si la etiqueta de confianza dice la verdad | `sff_examen_cartera(_resumen)`, `sff_series_exam`, `sff_forecast_series` |
 | 7 · Uplift y precios | el uplift por origen, su examen, la regla de contrato, la homogeneidad, las subidas en juego y el monitor de cada grupo de precio | `sff_uplift_celda`, `sff_backtest_uplift`, `sff_uplift_contrato_check`, `sff_uplift_homogeneidad`, `sff_price_increase_monitor`, `sff_price_increase_calendar` |
 | 8 · Marcas | cada marca hoy, esperada y final, y lo que el reparto resta al forecast | `sff_forecast_maduracion` |
 | 9 · Parámetros y validación | la validación final, los parámetros de la ejecución y la leyenda de cualquier columna | `sff_validacion`, `sff_parametros`, `sff_nucleo_leyenda` |

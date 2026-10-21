@@ -4,16 +4,17 @@ step_12_pool_series.py — The monthly series of every final group: what the bac
 After the ladder (steps 10-11) every estimable series belongs to ONE final group, and the
 group lends its rate to its series. The rate that will be forecast is the rate of that
 group, month by month. This step builds that monthly series: for every final group, the
-units due and renewed of ITS series (the partition of step 10: every series in one group)
-are summed month by month, and its rate is Σ renewed / Σ due of the month. Grouping by the
-final group id, the totals add up to the raw.
+units due and renewed of every series in its rate (the ones that use it and the ones that
+only lend their history) are summed month by month, and its rate is Σ renewed / Σ due of the
+month. A lender is in more than one composition: summing every composition does NOT add up
+to the raw (the portfolio is taken from the series themselves, step 13).
 
 Only closed truth months enter (entrenamiento, examen): the gaps and the future have no
 rate. Every id also gets a reference row: its months, its support (the median units due
 of a month), its rate over all its months, how many series take their rate from it, the
 money they have to predict, and its GATE:
   · nivel    support ≥ support_floor: the backtest will judge its techniques
-  · soporte  support below the floor: not judged, it will take the challenger
+  · soporte  support below the floor: not judged, it will take the default technique
 
 Actions (logged as they are done):
   1. the compositions of step 10 and every series in their rate (users and lenders)
@@ -126,7 +127,7 @@ def build_pool_series(rated_units: pd.DataFrame, ladder: dict, series_estimate: 
 
     # [7] the ids by gate, and the largest ones
     configuration.log_action(STEP_LABEL, 7, f"final groups by gate (nivel: support ≥ {configuration.support_floor:.0f}, "
-                                            f"judged by the backtest; soporte: below it, takes the challenger):")
+                                            f"judged by the backtest; soporte: below it, takes the default technique):")
     configuration.show_table(pool_reference.groupby("gate")
                              .agg(ids=(COMPOSITION_ID_COLUMN, "size"), series_que_lo_usan=("series_que_lo_usan", "sum"),
                                   usd_por_predecir=("usd_por_predecir", "sum"), meses_mediana=("meses", "median"))

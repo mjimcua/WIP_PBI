@@ -43,9 +43,8 @@ def test_one_way_of_predicting() -> None:
     print("B · the forecast, the exam and the audit predict the same way")
     results = {}
     console = console_of(lambda: results.update(run(synthetic_with())))
-    check("the chosen technique, applied to every series, gives the framework prediction of step 19" in console
-          and "18 checks: 18 ok" in console.split("STEP AUD")[1],
-          "the audit (from the backtest of step 14) and the exam (step 19) give the same prediction for every series")
+    check("12 checks: 12 ok" in console.split("STEP AUD")[1] and "the framework prediction of step 19" not in console,
+          "the audit no longer recomputes the exam of step 19: the framework prediction of every series is made once")
     forecast = results["forecast"]["forecast"]
     traced = forecast.dropna(subset=["tasa_pool_h"])
     recomputed, _ = shifted_rate(traced["tasa_pool_h"], traced["z"], traced["ref_rate"], traced["group_rate"])
@@ -55,12 +54,12 @@ def test_one_way_of_predicting() -> None:
 def test_the_lookups_at_scale() -> None:
     print("C · the lookups of the hot loops: the same values as the pandas way, on every path")
     configuration = synthetic_with()
-    challenger = configuration.challenger_technique
-    bands = pd.DataFrame({"tecnica": ["T2_mean", "T2_mean", challenger], "h": [1, 6, 1],
+    default_technique = configuration.default_technique
+    bands = pd.DataFrame({"tecnica": ["T2_mean", "T2_mean", default_technique], "h": [1, 6, 1],
                           "q_low_norm": [-1.1, -2.2, -1.5], "q_high_norm": [1.3, 2.4, 1.6]})
     q_low, q_high = band_quantiles(bands, ["T2_mean", "T9_ses", "T9_ses", "own_level"], [1, 1, 6, 6], configuration)
     check(list(q_low) == [-1.1, -1.5, -configuration.z, -configuration.z] and list(q_high) == [1.3, 1.6, configuration.z, configuration.z],
-          "band quantiles: the technique's own band; without one, the challenger's; without either, ±z")
+          "band quantiles: the technique's own band; without one, the default technique's; without either, ±z")
 
     months = pd.period_range("2025-01", periods=6, freq="M")
     frame = pd.DataFrame({"key": ["b", "a", "b", "a", None, "b"], "period": [months[3], months[1], months[0], months[0], months[2], months[5]],

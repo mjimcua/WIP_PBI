@@ -4,7 +4,7 @@ best, how precise it is, and how wide its error band must be.
 
 HOW THE TEST WORKS (it is also written in the log, with the months of the run):
   · WHAT IS JUDGED: the monthly series of every estimation id with support (gate 'nivel',
-    step 12). An id below the floor is not judged: it takes the challenger.
+    step 12). An id below the floor is not judged: it takes the default technique.
   · TWO KINDS OF TARGET MONTHS, never mixed:
       selection  the backtest_selection_months (6) closed months BEFORE the exam: the
                  techniques are compared on them and the best one is CHOSEN
@@ -19,7 +19,7 @@ HOW THE TEST WORKS (it is also written in the log, with the months of the run):
     own units: err_norm = err_pp / se_binom_pp. |err_norm| ≈ 1 is as good as any forecast
     can be; 3 means three times the noise.
   · THE CHOICE, per id and horizon band (corto = h 1, medio_largo = h 2-6): the technique
-    with the lowest mean |err_norm| in the selection months REPLACES the challenger
+    with the lowest mean |err_norm| in the selection months REPLACES the default technique
     (T3_ma3, the moving average of 3 months) only if it beats it by the band's margin
     (0.10 near, 0 far). A technique competes where its minimum history is reached (the
     seasonal ones need 13 and 24 months): only the history limits, no seasonality verdict.
@@ -27,16 +27,15 @@ HOW THE TEST WORKS (it is also written in the log, with the months of the run):
   · THE BAND, per technique and horizon: the 5 % and 95 % quantiles of err_norm in the
     selection months, over every judged id. In the exam, 90 % of the errors of the chosen
     technique should fall inside it.
-  · THE PRECISION, in the exam months: per id (chosen vs challenger) and for the TOTAL:
+  · THE PRECISION, in the exam months: per id (chosen vs default technique) and for the TOTAL:
     Σ predicted renewals vs Σ real renewals of all judged ids, month by month.
 
 OUTPUT TABLES (long format: one row per prediction, not one table or column per technique;
 each id competes with the techniques its history allows, and Power BI pivots it):
-  sff_dim_tecnica            the catalogue
   sff_backtest_predicciones  id × target month × horizon × technique: predicted, real, errors
-  sff_decision_tecnica       id × horizon band: the chosen technique, its error, the challenger's
+  sff_decision_tecnica       id × horizon band: the chosen technique, its error, the default technique's
   sff_decision_bandas        technique × horizon: the error quantiles
-  sff_backtest_examen        id × horizon band: the chosen vs the challenger in the exam
+  sff_backtest_examen        id × horizon band: the chosen vs the default technique in the exam
   sff_backtest_examen_total  exam month × horizon: the error of the total renewals
 
 Actions (logged as they are done):
@@ -46,18 +45,18 @@ Actions (logged as they are done):
   4. the error bands of every technique and horizon
   5. the precision in the exam: per id and for the total
   6. check the test                                                 checks 1-5
-  7. write the six tables                                           checks 6-11
+  7. write the five tables                                          checks 6-10
   8. count the checks; stop if any failed
   9. show the ranking of the techniques, the choices and the precision in the exam
 
 Checks (logged as they are made, numbered, at the level of their status):
    1. no prediction saw its target month or anything after its origin
    2. every estimation id has a decision in every horizon band
-   3. the challenger was predicted wherever another technique was
+   3. the default technique was predicted wherever another technique was
    4. the ranking compares the techniques on common targets (every technique competed)
    5. in the exam, the band holds at least 80 % of the chosen technique's errors (nominal 90 %)
                                                                      (warning only)
-   6-11. the six tables written and read back
+   6-10. the five tables written and read back
 
 Output: (the predictions, the decision per id and band, the error bands, the exam per id,
 the exam of the total) · the six tables above.
@@ -68,10 +67,10 @@ import numpy as np
 import pandas as pd
 
 from config import Config
-from techniques import CATALOGUE, eligible_techniques, inverse_logit, logit, predict_logit, technique_table
-from vocabulario import (CHALLENGER_ORIGIN, CHAMPION_ORIGIN, COMPOSITION_ID_COLUMN, GATE_LEVEL, PURPOSE_EXAM,
+from techniques import CATALOGUE, eligible_techniques, inverse_logit, logit, predict_logit
+from vocabulario import (DEFAULT_ORIGIN, CHAMPION_ORIGIN, COMPOSITION_ID_COLUMN, GATE_LEVEL, PURPOSE_EXAM,
                          PURPOSE_SELECTION, RATE_COLUMN, TABLE_BACKTEST_PREDICTIONS, TABLE_ERROR_BANDS,
-                         TABLE_EXAM_BY_POOL, TABLE_EXAM_TOTAL, TABLE_TECHNIQUES, TABLE_TECHNIQUE_DECISION)
+                         TABLE_EXAM_BY_POOL, TABLE_EXAM_TOTAL, TABLE_TECHNIQUE_DECISION)
 
 
 # ─── the step ────────────────────────────────────────────────────────────────────
@@ -86,15 +85,15 @@ STEP_ACTIONS = ["the calendar of the test: selection and exam months, horizons, 
                 "the error bands of every technique and horizon",
                 "the precision in the exam: per id and for the total",
                 "check the test (checks 1-5)",
-                "write the six tables (checks 6-11)",
+                "write the five tables (checks 6-10)",
                 "count the checks; stop if any failed",
                 "show the ranking of the techniques, the choices and the precision in the exam"]
 STEP_OUTPUT = ("predictions (id × target × horizon × technique) · the chosen technique per id and band · error bands · "
-               "the exam per id and for the total · six tables")
+               "the exam per id and for the total · five tables")
 
 # ─── named constants ─────────────────────────────────────────────────────────────
 PERCENTAGE_POINTS = 100
-SUPPORT_ORIGIN = "sin_soporte"      # an id below the floor: not judged, it takes the challenger
+SUPPORT_ORIGIN = "sin_soporte"      # an id below the floor: not judged, it takes the default technique
 PREDICTION_COLUMNS = [COMPOSITION_ID_COLUMN, "proposito", "mes_objetivo", "h", "origen", "ultimo_mes_visto", "tecnica",
                       "tasa_pred", "tasa_real", "vencen_real", "err_pp", "se_binom_pp", "err_norm"]
 
@@ -144,8 +143,7 @@ def run_backtest(pool_series: pd.DataFrame, pool_reference: pd.DataFrame, config
     check_backtest(predictions, decision, pool_reference, exam_rows, configuration, check_log)
 
     # [7] the tables
-    configuration.log_action(STEP_LABEL, 7, "writing the six tables")
-    configuration.write_table(STEP_LABEL, check_log, technique_table(), TABLE_TECHNIQUES)
+    configuration.log_action(STEP_LABEL, 7, "writing the five tables")
     configuration.write_table(STEP_LABEL, check_log, predictions, TABLE_BACKTEST_PREDICTIONS)
     configuration.write_table(STEP_LABEL, check_log, decision, TABLE_TECHNIQUE_DECISION)
     configuration.write_table(STEP_LABEL, check_log, bands, TABLE_ERROR_BANDS)
@@ -183,7 +181,7 @@ def log_how_the_test_works(selection_months: list, exam_months: list, pool_refer
     configuration.log_action(STEP_LABEL, 1, "how the test works:")
     explanation = [
         f"WHAT: the monthly rate of the {int(judged.sum()):,} estimation ids with support (of {len(pool_reference):,}); "
-        f"the other {int((~judged).sum()):,} are not judged and take the challenger {configuration.challenger_technique}",
+        f"the other {int((~judged).sum()):,} are not judged and take the default technique {configuration.default_technique}",
         f"SELECTION months {selection_months[0]}..{selection_months[-1]} ({len(selection_months)}): every technique predicts "
         f"them and the best one is CHOSEN",
         f"EXAM months {exam_months[0]}..{exam_months[-1]} ({len(exam_months)}): only to MEASURE the chosen technique, "
@@ -194,14 +192,14 @@ def log_how_the_test_works(selection_months: list, exam_months: list, pool_refer
         "ERROR: err_pp = 100·(predicted − real rate); err_norm = err_pp / binomial error of the real rate with the "
         "month's own units. |err_norm| ≈ 1 = as close as chance allows; 3 = three times the noise",
         f"CHOICE per id and band {list(configuration.horizon_bands)}: the lowest mean |err_norm| in the selection months "
-        f"replaces {configuration.challenger_technique} only if it beats it by the margin "
-        f"{configuration.challenger_margin_by_band}",
+        f"replaces {configuration.default_technique} only if it beats it by the margin "
+        f"{configuration.default_margin_by_band}",
         "WHO COMPETES: every technique whose minimum history is reached (seasonal ones: 13 and 24 months); "
         "only the history limits, no seasonality verdict; the ranking uses the targets where all of them competed",
         f"BAND per technique and horizon: quantiles {configuration.band_low_quantile:.0%}-{configuration.band_high_quantile:.0%} "
         f"of err_norm in the selection months; in the exam ≈ {configuration.band_high_quantile - configuration.band_low_quantile:.0%} "
         f"of the errors should fall inside",
-        "PRECISION in the exam: per id (chosen vs challenger) and of the TOTAL renewals of the judged ids, month by month"]
+        "PRECISION in the exam: per id (chosen vs default technique) and of the TOTAL renewals of the judged ids, month by month"]
     for line in explanation:
         configuration.logger.doc(f"[{STEP_LABEL}]      {line}")
 
@@ -261,43 +259,58 @@ def predict_every_target(pool_series: pd.DataFrame, judged_ids: set, selection_m
 # ═══════════════════════════════════════════════════════════════════════════════════
 
 def choose_techniques(predictions: pd.DataFrame, pool_reference: pd.DataFrame, configuration: Config) -> pd.DataFrame:
-    """Per id and band, on the selection months: the lowest mean |err_norm| replaces the
-    challenger only if it beats it by the band's margin; ties go to the catalogue order.
-    Ids below the floor get the challenger (sin_soporte)."""
-    challenger = configuration.challenger_technique
+    """Per id and band, on the selection months: a technique replaces the default technique only if, on the targets
+    (month, horizon) BOTH predicted, its mean |err_norm| is lower than the default's by the band's margin and it has at
+    least backtest_min_predictions of them; among the ones that do, the biggest improvement wins (ties: the catalogue
+    order). Comparing on the shared targets matters: a technique that needs more history predicts fewer, later
+    targets, and its mean over them is not comparable with the default's over all of them.
+    Ids below the floor get the default technique (sin_soporte)."""
+    default_technique = configuration.default_technique
     catalogue_order = {technique_id: position for position, technique_id in enumerate(CATALOGUE)}
     selection = predictions[predictions["proposito"] == PURPOSE_SELECTION].assign(
         abs_norm=lambda frame: frame["err_norm"].abs(), abs_pp=lambda frame: frame["err_pp"].abs())
     scores = (selection.groupby([COMPOSITION_ID_COLUMN, "tramo_h", "tecnica"])
               .agg(err_norm_medio=("abs_norm", "mean"), err_pp_medio=("abs_pp", "mean"), n_predicciones=("abs_norm", "size"))
               .reset_index())
+    # every target of every id and band, one column per technique: the shared targets are where both are filled
+    by_target = selection.pivot_table(index=[COMPOSITION_ID_COLUMN, "tramo_h", "mes_objetivo", "h"], columns="tecnica",
+                                      values="abs_norm", aggfunc="first")
     decision_rows = []
     for (estimation_id, band_name), block in scores.groupby([COMPOSITION_ID_COLUMN, "tramo_h"]):
         block = block.set_index("tecnica")
-        challenger_score = block.loc[challenger, "err_norm_medio"] if challenger in block.index else np.inf
-        margin = float(configuration.challenger_margin_by_band.get(band_name, 0.0))
-        candidates = block[block["n_predicciones"] >= configuration.backtest_min_predictions]
-        chosen, origin = challenger, CHALLENGER_ORIGIN
-        if len(candidates):
-            best = min(candidates.index, key=lambda technique_id: (candidates.loc[technique_id, "err_norm_medio"],
-                                                                   catalogue_order[technique_id]))
-            if best != challenger and candidates.loc[best, "err_norm_medio"] < challenger_score - margin:
-                chosen, origin = best, CHAMPION_ORIGIN
+        default_score = block.loc[default_technique, "err_norm_medio"] if default_technique in block.index else np.inf
+        margin = float(configuration.default_margin_by_band.get(band_name, 0.0))
+        chosen, origin = default_technique, DEFAULT_ORIGIN
+        if default_technique in block.index:
+            targets = by_target.loc[(estimation_id, band_name)]
+            improvements = {}
+            for technique_id in block.index:
+                if technique_id == default_technique:
+                    continue
+                shared = targets[[technique_id, default_technique]].dropna()
+                if len(shared) < configuration.backtest_min_predictions:
+                    continue
+                improvement = shared[default_technique].mean() - shared[technique_id].mean()
+                if improvement > margin:
+                    improvements[technique_id] = improvement
+            if improvements:
+                chosen = min(improvements, key=lambda technique_id: (-improvements[technique_id], catalogue_order[technique_id]))
+                origin = CHAMPION_ORIGIN
         chosen_row = block.loc[chosen] if chosen in block.index else pd.Series(dict(err_norm_medio=np.nan, err_pp_medio=np.nan,
                                                                                     n_predicciones=0))
         decision_rows.append({COMPOSITION_ID_COLUMN: estimation_id, "tramo_h": band_name, "tecnica": chosen,
                               "tecnica_origen": origin, "err_norm_seleccion": chosen_row["err_norm_medio"],
                               "err_pp_seleccion": chosen_row["err_pp_medio"], "n_predicciones": int(chosen_row["n_predicciones"]),
-                              "retador_err_norm_seleccion": challenger_score})
+                              "por_defecto_err_norm_seleccion": default_score})
     decision = pd.DataFrame(decision_rows)
 
     # every id and band gets a decision: the unjudged ones (and a judged id with no selection
-    # month in a band) take the challenger
+    # month in a band) take the default technique
     all_pairs = pd.MultiIndex.from_product([pool_reference[COMPOSITION_ID_COLUMN], list(configuration.horizon_bands)],
                                            names=[COMPOSITION_ID_COLUMN, "tramo_h"]).to_frame(index=False)
     decision = all_pairs.merge(decision, on=[COMPOSITION_ID_COLUMN, "tramo_h"], how="left")
     unjudged = decision["tecnica"].isna()
-    decision.loc[unjudged, "tecnica"] = challenger
+    decision.loc[unjudged, "tecnica"] = default_technique
     decision.loc[unjudged, "tecnica_origen"] = SUPPORT_ORIGIN
     decision["n_predicciones"] = decision["n_predicciones"].fillna(0).astype(int)
     return decision
@@ -314,14 +327,14 @@ def error_bands(predictions: pd.DataFrame, configuration: Config) -> pd.DataFram
 
 
 def exam_precision(predictions: pd.DataFrame, decision: pd.DataFrame, bands: pd.DataFrame, configuration: Config) -> tuple:
-    """The chosen technique and the challenger in the exam months: per id and for the total."""
-    challenger = configuration.challenger_technique
+    """The chosen technique and the default technique in the exam months: per id and for the total."""
+    default_technique = configuration.default_technique
     exam = predictions[predictions["proposito"] == PURPOSE_EXAM]
     chosen_rows = exam.merge(decision[[COMPOSITION_ID_COLUMN, "tramo_h", "tecnica"]], on=[COMPOSITION_ID_COLUMN, "tramo_h", "tecnica"])
     chosen_rows = chosen_rows.merge(bands[["tecnica", "h", "q_low_norm", "q_high_norm"]], on=["tecnica", "h"], how="left")
     chosen_rows["dentro_banda"] = ((chosen_rows["err_norm"] >= chosen_rows["q_low_norm"])
                                    & (chosen_rows["err_norm"] <= chosen_rows["q_high_norm"])).astype(int)
-    challenger_rows = exam[exam["tecnica"] == challenger]
+    default_rows = exam[exam["tecnica"] == default_technique]
 
     def summary(rows: pd.DataFrame, prefix: str) -> pd.DataFrame:
         return (rows.assign(abs_pp=rows["err_pp"].abs(), abs_norm=rows["err_norm"].abs())
@@ -329,10 +342,10 @@ def exam_precision(predictions: pd.DataFrame, decision: pd.DataFrame, bands: pd.
                 .agg(**{f"{prefix}_err_pp_medio": ("abs_pp", "mean"), f"{prefix}_sesgo_pp": ("err_pp", "mean"),
                         f"{prefix}_err_norm_medio": ("abs_norm", "mean")}))
 
-    exam_by_pool = summary(chosen_rows, "elegida").join(summary(challenger_rows, "retador"), how="left").reset_index()
+    exam_by_pool = summary(chosen_rows, "elegida").join(summary(default_rows, "por_defecto"), how="left").reset_index()
     exam_by_pool = exam_by_pool.merge(decision[[COMPOSITION_ID_COLUMN, "tramo_h", "tecnica", "tecnica_origen"]],
                                       on=[COMPOSITION_ID_COLUMN, "tramo_h"], how="left")
-    exam_by_pool["mejora_pp"] = exam_by_pool["retador_err_pp_medio"] - exam_by_pool["elegida_err_pp_medio"]
+    exam_by_pool["mejora_pp"] = exam_by_pool["por_defecto_err_pp_medio"] - exam_by_pool["elegida_err_pp_medio"]
     exam_by_pool["dentro_banda"] = chosen_rows.groupby([COMPOSITION_ID_COLUMN, "tramo_h"])["dentro_banda"].mean().to_numpy()
 
     # the TOTAL: Σ predicted renewals vs Σ real renewals of every judged id, per exam month and horizon
@@ -342,8 +355,8 @@ def exam_precision(predictions: pd.DataFrame, decision: pd.DataFrame, bands: pd.
                 .agg(**{f"{prefix}_renovadas_pred": ("pred_units", "sum"), "renovadas_reales": ("real_units", "sum"),
                         "vencen": ("vencen_real", "sum")}))
 
-    exam_total = total_of(chosen_rows, "elegida").join(total_of(challenger_rows, "retador")[["retador_renovadas_pred"]]).reset_index()
-    for prefix in ("elegida", "retador"):
+    exam_total = total_of(chosen_rows, "elegida").join(total_of(default_rows, "por_defecto")[["por_defecto_renovadas_pred"]]).reset_index()
+    for prefix in ("elegida", "por_defecto"):
         exam_total[f"{prefix}_error_pct"] = (exam_total[f"{prefix}_renovadas_pred"] - exam_total["renovadas_reales"]) / exam_total["renovadas_reales"]
     return exam_by_pool, exam_total, chosen_rows
 
@@ -365,12 +378,12 @@ def check_backtest(predictions: pd.DataFrame, decision: pd.DataFrame, pool_refer
                             failure_detail=f"{len(decision):,} decisions, {expected:,} expected",
                             context=f"{len(pool_reference):,} ids × {len(configuration.horizon_bands)} bands")
 
-    # [3] the challenger is always there to compare with
+    # [3] the default technique is always there to compare with
     targets = predictions.groupby([COMPOSITION_ID_COLUMN, "mes_objetivo", "h"])["tecnica"].apply(set)
-    without_challenger = int(sum(configuration.challenger_technique not in techniques for techniques in targets))
-    configuration.log_check(STEP_LABEL, check_log, "the challenger was predicted wherever another technique was",
-                            without_challenger == 0,
-                            failure_detail=f"{without_challenger:,} targets without the challenger")
+    without_default = int(sum(configuration.default_technique not in techniques for techniques in targets))
+    configuration.log_check(STEP_LABEL, check_log, "the default technique was predicted wherever another technique was",
+                            without_default == 0,
+                            failure_detail=f"{without_default:,} targets without the default technique")
 
     # [4] a fair ranking: the techniques are compared on the targets where all of them competed
     common = common_targets(predictions)
@@ -418,14 +431,14 @@ def log_backtest_report(predictions: pd.DataFrame, decision: pd.DataFrame, exam_
                              .reset_index().sort_values(["tramo_h", "usd_por_predecir"], ascending=[True, False]))
 
     configuration.logger.doc(f"[{STEP_LABEL}] precision in the EXAM, per band (mean over the judged ids; err in pp of rate; "
-                             f"mejora = challenger's error − chosen's error):")
+                             f"mejora = default technique's error − chosen's error):")
     configuration.show_table(exam_by_pool.groupby("tramo_h")
                              .agg(ids=(COMPOSITION_ID_COLUMN, "size"), elegida_err_pp=("elegida_err_pp_medio", "mean"),
-                                  retador_err_pp=("retador_err_pp_medio", "mean"), mejora_pp=("mejora_pp", "mean"),
+                                  por_defecto_err_pp=("por_defecto_err_pp_medio", "mean"), mejora_pp=("mejora_pp", "mean"),
                                   elegida_sesgo_pp=("elegida_sesgo_pp", "mean"), dentro_banda=("dentro_banda", "mean"))
                              .reset_index())
 
     configuration.logger.doc(f"[{STEP_LABEL}] precision of the TOTAL in the exam (Σ predicted renewals vs Σ real of the "
                              f"judged ids; error_pct = (predicted − real) / real):")
     configuration.show_table(exam_total[["mes_objetivo", "h", "vencen", "renovadas_reales", "elegida_renovadas_pred",
-                                         "elegida_error_pct", "retador_renovadas_pred", "retador_error_pct"]])
+                                         "elegida_error_pct", "por_defecto_renovadas_pred", "por_defecto_error_pct"]])

@@ -37,8 +37,8 @@ Actions (logged as they are done):
   3. the contract rule against the past renewals with a known discount
   4. the homogeneity of every cell (only with the exact base): renewers' average due price
      against the cell's, and the approximate uplift against the exact one
-  5. check the uplifts                                               checks 1-3
-  6. write the tables                                                checks 4-6
+  5. check the uplifts                                               checks 1-4
+  6. write the tables                                                checks 5-7
   7. count the checks; stop if any failed
   8. show the uplift by origin, the contract rule and the homogeneity by discount bucket
   9. the revaluation of the renewers, read for business: the population of the claim
@@ -66,7 +66,7 @@ homogeneity and the price increases in play (for step 17) · tables sff_uplift_c
 import numpy as np
 import pandas as pd
 
-from config import ISOLATED_RATIO_BANDS, Config, join_columns, weighted_ratio_spread
+from config import ISOLATED_RATIO_BANDS, Config, has_no_negative_mark, join_columns, weighted_ratio_spread
 from price_increases import (active_increases, increase_calendar, increase_factor, pending_steps, price_group_columns,
                              price_group_of, price_monitor)
 from vocabulario import (CALENDAR_ROLE_COLUMN, ROLE_PROJECTION, SERIES_ID_COLUMN, TABLE_CONTRACT_CHECK, TABLE_UPLIFT_CELLS,
@@ -448,15 +448,13 @@ def revaluation_report(renewers: pd.DataFrame, configuration: Config) -> None:
         f"percentiles p10 {p10:.3f} · p25 {p25:.3f} · MEDIAN {p50:.3f} · p75 {p75:.3f} · p90 {p90:.3f}")
     doc(f"[{STEP_LABEL}] between SERIES (each series at its mean): {share_100_105:.0%} of the renewed USD in series "
         f"whose uplift sits in [1.00, 1.05) · {share_095_105:.0%} in [0.95, 1.05) · {share_above_110:.0%} at or above 1.10")
-    if with_bands:
-        pass                                          # the licence level above already answered the claim
-    elif share_above_110 > 0.15:
+    if not with_bands and share_above_110 > 0.15:      # with the bands, the licence level above already answered the claim
         doc(f"[{STEP_LABEL}] VALORACIÓN: a heavy tail at or above 1.10. Look at its discount buckets below: a tail in "
             f"high KNOWN buckets is the contract losing its discount (legitimate); one in the unknown bucket is the "
             f"statistical path and deserves the homogeneity table")
-    elif share_095_105 > 0.80:
+    elif not with_bands and share_095_105 > 0.80:
         doc(f"[{STEP_LABEL}] VALORACIÓN: the claim holds: most of the money renews within ±5 % of what it was worth")
-    else:
+    elif not with_bands:
         doc(f"[{STEP_LABEL}] VALORACIÓN: the money is spread beyond ±5 %: the buckets below say whether the spread "
             f"follows the discount (expected) or not")
 
@@ -610,7 +608,69 @@ def show_price_increases(fine_table: pd.DataFrame, renewers: pd.DataFrame, histo
                 f"desde {step['inicio']} ({step['escalon_medio']:+.1f}%), hacen falta {configuration.price_persistence_months}: "
                 f"si es una subida, el forecast NO la lleva en {current_month}..{step['inicio'] + (cycle - 1)} (lo que le "
                 f"queda de ciclo) y sus meses están en la ventana sin deflactar (suben algo el uplift de su celda)")
+    show_series_with_increases(fine_table, renewers, price["calendar"], configuration)
     doc(f"[{STEP_LABEL}] ══════════ FIN DE SUBIDAS DE PRECIO Y VENTANA DEL UPLIFT ══════════")
+
+
+def show_series_with_increases(fine_table: pd.DataFrame, renewers: pd.DataFrame, calendar: pd.DataFrame,
+                               configuration: Config) -> None:
+    """The step of an increase, seen in the series that carry the most money: the price_series_shown forecast series
+    with the most renewed USD among the price groups with an increase detected, month by month over their last
+    price_series_months_shown closed months.
+
+    INPUT:   the fine table, the renewer rows (with _numerador / _denominador) and the calendar of increases detected.
+    OUTPUT:  nothing returned: one table per series on screen, with
+               precio_vence      USD due / units due: the price the licence was bought at (it rises one cycle after)
+               precio_renovado   renewed USD / renewed units: the price paid when renewing (it rises at the increase)
+               uplift            renewed USD / base of the renewers: inside the cycle it jumps by about the step
+               subida            ▲ +x % in the month an increase of its group starts; · in the other months of its cycle
+    """
+    doc = configuration.logger.doc
+    period = configuration.period_col
+    cycle = configuration.price_cycle_months
+    if calendar is None or not len(calendar):
+        doc(f"[{STEP_LABEL}] no increase detected: no series to show its step")
+        return
+    if SERIES_ID_COLUMN not in fine_table.columns or SERIES_ID_COLUMN not in renewers.columns:
+        doc(f"[{STEP_LABEL}] the fine table has no {SERIES_ID_COLUMN}: no series to show the step of its increase")
+        return
+    group_dims = price_group_columns(fine_table, configuration)
+    closed = fine_table[fine_table[CALENDAR_ROLE_COLUMN] != ROLE_PROJECTION]
+    closed = closed.assign(_grupo=price_group_of(closed, group_dims))
+    increased_groups = set(calendar["price_group"])
+    money = (closed[closed["_grupo"].isin(increased_groups)]
+             .groupby([SERIES_ID_COLUMN, "_grupo"])[configuration.renewed_usd_col].sum().sort_values(ascending=False))
+    largest = money.head(configuration.price_series_shown)
+    doc(f"[{STEP_LABEL}] the {len(largest)} forecast series with the most renewed USD in a price group with an increase, "
+        f"month by month (the last {configuration.price_series_months_shown} closed months): precio_vence rises one cycle "
+        f"after the increase (the licences are bought at the new price), precio_renovado and the uplift at the increase:")
+    renewer_months = renewers.groupby([SERIES_ID_COLUMN, period])[["_numerador", "_denominador"]].sum()
+    for (series_id, group), renewed_usd in largest.items():
+        rows = closed[closed[SERIES_ID_COLUMN] == series_id]
+        monthly = rows.groupby(period)[[configuration.pipeline_units_col, configuration.pipeline_usd_col,
+                                        configuration.renewed_units_col, configuration.renewed_usd_col]].sum()
+        monthly = monthly.tail(configuration.price_series_months_shown)
+        table = pd.DataFrame(index=monthly.index)
+        table["vencen_unid"] = monthly[configuration.pipeline_units_col].round(0)
+        table["precio_vence"] = (monthly[configuration.pipeline_usd_col]
+                                 / monthly[configuration.pipeline_units_col].where(monthly[configuration.pipeline_units_col] > 0)).round(2)
+        table["precio_renovado"] = (monthly[configuration.renewed_usd_col]
+                                    / monthly[configuration.renewed_units_col].where(monthly[configuration.renewed_units_col] > 0)).round(2)
+        if series_id in renewer_months.index.get_level_values(0):
+            ratio = renewer_months.loc[series_id]
+            table["uplift"] = (ratio["_numerador"] / ratio["_denominador"]).reindex(table.index).round(3)
+        marks = pd.Series("", index=table.index)
+        for _, increase in calendar[calendar["price_group"] == group].iterrows():
+            start = increase["inicio"]
+            in_cycle = (table.index >= start) & (table.index <= start + (cycle - 1))
+            marks[in_cycle & (marks == "")] = "·"
+            if start in marks.index:
+                marks[start] = f"▲ {100 * increase['escalon']:+.1f}%"
+        table["subida"] = marks
+        starts = ", ".join(f"{increase['inicio']} ({100 * increase['escalon']:+.1f}%)"
+                           for _, increase in calendar[calendar["price_group"] == group].iterrows())
+        doc(f"[{STEP_LABEL}] · {series_id} · grupo de precio {group} · ${renewed_usd:,.0f} renovados en total · subidas: {starts}")
+        configuration.show_table(table.reset_index())
 
 
 def estimate_cell_uplifts(fine_table: pd.DataFrame, renewers: pd.DataFrame, configuration: Config,
@@ -651,9 +711,8 @@ def estimate_cell_uplifts(fine_table: pd.DataFrame, renewers: pd.DataFrame, conf
 
     # the band: bootstrap of the renewer rows of the group the uplift came from
     generator = np.random.default_rng(configuration.random_seed)
-    group_column_of = {UPLIFT_OWN: UPLIFT_CELL_ID_COLUMN, UPLIFT_PARENT: "uplift_padre_id", UPLIFT_CELL: "uplift_celda_mandatory_id"}
-    row_groups = {origin: renewers.groupby(column).indices for origin, column in group_column_of.items()}
     group_key_of = {UPLIFT_OWN: UPLIFT_CELL_ID_COLUMN, UPLIFT_PARENT: "uplift_padre_id", UPLIFT_CELL: "uplift_celda_mandatory_id"}
+    row_groups = {origin: renewers.groupby(column).indices for origin, column in group_key_of.items()}
     numerator, denominator = renewers[numerator_column].to_numpy(dtype=float), renewers["_denominador"].to_numpy(dtype=float)
     lows, highs, cache = [], [], {}
     for _, cell_row in cells.iterrows():
@@ -673,31 +732,100 @@ def estimate_cell_uplifts(fine_table: pd.DataFrame, renewers: pd.DataFrame, conf
         lows.append(low); highs.append(high)
     cells["uplift_bajo"] = np.clip(lows, configuration.min_uplift, configuration.uplift_cap)
     cells["uplift_alto"] = np.clip(highs, configuration.min_uplift, configuration.uplift_cap)
-    cells.attrs["uplift_global"] = global_uplift
     return cells
 
 
+def contract_rule(discount_values: pd.Series, configuration: Config) -> pd.Series:
+    """The contract rule: the uplift 1 / (1 − d) of a known discount d, capped at contract_discount_cap. The discount
+    is measured against the MSRP of the contract at expiry, so the rule already carries the price increases between
+    the purchase and the expiry."""
+    return 1 / (1 - discount_values.clip(upper=configuration.contract_discount_cap))
+
+
 def contract_check(renewers: pd.DataFrame, configuration: Config) -> pd.DataFrame:
-    """The contract rule against the past renewals with a known discount, per discount bucket:
-    observed uplift, rule uplift, realization ratio (observed / rule) and the share of renewed
-    money within ±2 % of the rule."""
+    """The contract rule against the past renewals with a known discount, per discount bucket and by who renews.
+
+    COLUMNS: renovadores, usd_renovado, uplift_observado, uplift_regla, ratio_realizacion (observed / rule, all the
+    renewers); cuota_neutras and realizacion_neutras (the rows without a negative mark: the typical renewal the rule
+    speaks of, the ones PATH_CONTRACT_NEUTRAL applies it to); realizacion_con_marca (softcancel, dormant…: offers and
+    changes); realizacion_isolated (same product, no retention event, never a softcancel), when declared."""
+    columns = ["tramo", "renovadores", "usd_renovado", "uplift_observado", "uplift_regla", "ratio_realizacion",
+               "cuota_neutras", "realizacion_neutras", "realizacion_con_marca", "realizacion_isolated"]
     if not configuration.discount_value_column:
-        return pd.DataFrame(columns=["tramo", "renovadores", "usd_renovado", "uplift_observado", "uplift_regla",
-                                     "ratio_realizacion", "pct_usd_dentro_2pct"])
+        return pd.DataFrame(columns=columns)
     known = renewers[renewers[configuration.discount_value_column].notna()].copy()
-    known["_regla"] = 1 / (1 - known[configuration.discount_value_column].clip(upper=configuration.contract_discount_cap))
-    known["_uplift_fila"] = known["_numerador"] / known["_denominador"]
-    known["_dentro"] = ((known["_uplift_fila"] / known["_regla"] - 1).abs() <= configuration.contract_tolerance).astype(float)
-    known["_regla_por_denominador"] = known["_regla"] * known["_denominador"]
-    known["_usd_dentro"] = known["_dentro"] * known["_numerador"]
-    grouped = known.groupby(configuration.discount_bucket_column)
+    known["_regla"] = contract_rule(known[configuration.discount_value_column], configuration)
+    known["_regla_x_base"] = known["_regla"] * known["_denominador"]
+    neutral = has_no_negative_mark(known, configuration)
+    bucket = configuration.discount_bucket_column
+
+    def realization(rows: pd.DataFrame, numerator: str, base: str) -> pd.Series:
+        grouped = rows.assign(_regla_x_esta_base=rows["_regla"] * rows[base]).groupby(bucket)
+        return (grouped[numerator].sum() / grouped["_regla_x_esta_base"].sum().where(lambda value: value > 0))
+
+    grouped = known.groupby(bucket)
     check = pd.DataFrame({"renovadores": grouped[configuration.renewed_units_col].sum(),
                           "usd_renovado": grouped["_numerador"].sum(),
                           "uplift_observado": grouped["_numerador"].sum() / grouped["_denominador"].sum(),
-                          "uplift_regla": grouped["_regla_por_denominador"].sum() / grouped["_denominador"].sum(),
-                          "pct_usd_dentro_2pct": grouped["_usd_dentro"].sum() / grouped["_numerador"].sum()})
+                          "uplift_regla": grouped["_regla_x_base"].sum() / grouped["_denominador"].sum()})
     check["ratio_realizacion"] = check["uplift_observado"] / check["uplift_regla"]
-    return check.reset_index().rename(columns={configuration.discount_bucket_column: "tramo"})
+    check["cuota_neutras"] = (known[neutral].groupby(bucket)["_denominador"].sum() / grouped["_denominador"].sum()).reindex(check.index)
+    check["realizacion_neutras"] = realization(known[neutral], "_numerador", "_denominador").reindex(check.index)
+    check["realizacion_con_marca"] = realization(known[~neutral], "_numerador", "_denominador").reindex(check.index)
+    if configuration.isolated_renewed_usd_col and configuration.isolated_renewed_pipeline_usd_col:
+        known["_iso_usd"] = known[configuration.isolated_renewed_usd_col].fillna(0.0)
+        known["_iso_base"] = known[configuration.isolated_renewed_pipeline_usd_col].fillna(0.0)
+        check["realizacion_isolated"] = realization(known, "_iso_usd", "_iso_base").reindex(check.index)
+    else:
+        check["realizacion_isolated"] = np.nan
+    return check.reset_index().rename(columns={bucket: "tramo"})[columns]
+
+
+def review_the_contract_rule(check: pd.DataFrame, fine_table: pd.DataFrame, configuration: Config) -> None:
+    """The reading of the contract check and the test of the reference price; on screen only.
+
+    INPUT:   the contract check (contract_check), the fine table.
+    OUTPUT:  nothing returned: the VALORACIÓN of who meets the rule (weighted by the renewed USD), and B · the list
+             price implied by every row, due USD / units / (1 − d), against the one of the lowest bucket of its same
+             sku, cell and year: the MSRP is a list price, so ~1 in every bucket; growing with the bucket means the
+             discount is measured over another reference. Whether the increases are counted twice is measured in the
+             exam (step 16, rows with and without an increase in its cycle)."""
+    discount = configuration.discount_value_column
+    doc = configuration.logger.doc
+    if not discount or check.empty:
+        return
+    period = configuration.period_col
+    bucket = configuration.discount_bucket_column
+    weights = check["usd_renovado"] / check["usd_renovado"].sum()
+    def weighted(column: str) -> float:
+        return float((check[column].fillna(0) * weights).sum()) if check[column].notna().any() else float("nan")
+    doc(f"[{STEP_LABEL}] VALORACIÓN de la regla del contrato: weighted by the renewed USD, the rule is realized "
+        f"{weighted('realizacion_neutras'):.0%} by the neutral renewals, {weighted('realizacion_con_marca'):.0%} by the "
+        f"marked ones, {weighted('realizacion_isolated'):.0%} by the isolated and {weighted('ratio_realizacion'):.0%} by "
+        f"all. The exam of step 16 decides which path the forecast uses (contrato_neutras = the rule on the neutral rows)")
+    # [B] the list price implied by every row, against the lowest bucket of its sku, cell and year
+    sku = configuration.sku_column
+    rows = fine_table[fine_table[discount].notna() & (fine_table[configuration.pipeline_units_col] > 0)].copy()
+    keys = [column for column in [sku] + configuration.extract_mandatory_dims if column and column in rows.columns]
+    if not keys:
+        doc(f"[{STEP_LABEL}] B · no sku nor mandatory dims: the implied list price cannot be compared")
+    else:
+        rows["_ano"] = rows[period].map(lambda month: month.year)
+        rows["_lista"] = rows[configuration.pipeline_usd_col] * contract_rule(rows[discount], configuration)
+        by_cell = rows.groupby(keys + ["_ano", bucket])[["_lista", configuration.pipeline_units_col, configuration.pipeline_usd_col]].sum()
+        by_cell["precio_lista"] = by_cell["_lista"] / by_cell[configuration.pipeline_units_col]
+        lowest = by_cell["precio_lista"].groupby(level=list(range(len(keys) + 1))).transform("first")
+        by_cell["ratio_al_tramo_bajo"] = by_cell["precio_lista"] / lowest
+        weights = by_cell[configuration.pipeline_usd_col]
+        implied = (by_cell.assign(_w=weights, _wr=weights * by_cell["ratio_al_tramo_bajo"])
+                   .groupby(level=bucket)[["_w", "_wr"]].sum())
+        implied["ratio_lista_implicita"] = implied["_wr"] / implied["_w"]
+        implied["usd_vence"] = implied["_w"]
+        doc(f"[{STEP_LABEL}] B · the list price implied by the rows, due USD / units / (1 − d), over the one of the lowest "
+            f"bucket of the same cell ({len(keys)} columns: sku and the mandatory dims) and year (1 = the same MSRP in "
+            f"every bucket, as it should; growing with the bucket = the discount is measured over another reference):")
+        configuration.show_table(implied[["usd_vence", "ratio_lista_implicita"]].round(3).reset_index())
+    doc(f"[{STEP_LABEL}] ══════════ FIN DE LA REGLA DEL CONTRATO ══════════")
 
 
 def estimate_uplift(fine_table: pd.DataFrame, configuration: Config) -> tuple:
@@ -794,9 +922,12 @@ def estimate_uplift(fine_table: pd.DataFrame, configuration: Config) -> tuple:
                                                                 uplift_medio=("uplift", "mean"),
                                                                 renovadores=("renovadores", "sum")).reset_index())
     if len(check):
+        configuration.logger.doc(f"[{STEP_LABEL}] ══════════ LA REGLA DEL CONTRATO ══════════")
         configuration.logger.doc(f"[{STEP_LABEL}] the contract rule 1/(1 − d) against the past renewals with a known discount "
-                                 f"(ratio_realizacion 1 = the rule is exact):")
-        configuration.show_table(check)
+                                 f"(realizacion 1 = the rule is exact; neutras = no negative mark, the rows the path "
+                                 f"contrato_neutras applies it to):")
+        configuration.show_table(check.round(3))
+        review_the_contract_rule(check, fine_table, configuration)
     # [9] the revaluation of the renewers, read for business
     configuration.log_action(STEP_LABEL, 9, "the revaluation of the renewers (isolated renewals, no acquisition): "
                                             "population, distribution, discount split, monthly path")

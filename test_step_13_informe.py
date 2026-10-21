@@ -40,7 +40,7 @@ def test_the_dynamics() -> None:
 
 
 def test_the_report() -> None:
-    print("B · the report and the card on the synthetic")
+    print("B · the report on the synthetic")
     configuration = synthetic_with(output_folder=os.path.join(os.path.dirname(configuration_path()), "salida_test"))
     results = {}
     console = console_of(lambda: results.update(run(configuration)))
@@ -53,11 +53,10 @@ def test_the_report() -> None:
           "the report tells, in one format, the rows the framework adds or wipes (gaps, wiped, created)")
     check("El error frente al ruido" in report and "parte_del_error_que_es_ruido" in report,
           "the report tells how much of the exam error is noise, by size of series and for the total")
-    card = results["card"]
-    check(len(card) == len(results["series"]) and {"phi", "tecnica_corto", "elegida_err_pp_medio_corto", "nivel_riesgo"} <= set(card.columns),
-          "the card: one row per series with dynamics, technique and exam error")
+    check(results["report"] == report and "sff_ficha_serie" not in report and "## 8 · Dónde está cada serie" in report,
+          "the step returns the text of the report; every series is in sff_forecast_series (no card table)")
     check("s13_phi" in results["forecast_series"].columns, "the forecast series dimension carries the dynamics of its composition")
-    check("3 checks: 3 ok" in console.split("STEP IN")[1], "the checks of the report pass")
+    check("1 checks: 1 ok" in console.split("STEP IN")[1], "the check of the report passes")
 
 
 def configuration_path():

@@ -32,7 +32,7 @@ def test_the_run() -> None:
     pipeline = Orchestrator(synthetic_with())
     check_stops(lambda: pipeline.run_step("forecast"), "run first", "a step without its inputs is refused, naming what to run first")
     console_of(pipeline.run)
-    check("forecast_series" in pipeline.context and "card" in pipeline.context, "the whole run fills the catalogue")
+    check("forecast_series" in pipeline.context and "report" in pipeline.context, "the whole run fills the catalogue")
 
 
 def test_the_contracts() -> None:

@@ -48,7 +48,7 @@ def test_steps_15_to_18() -> None:
     configuration = synthetic_with()
     results = {}
     console = console_of(lambda: results.update(run(configuration)))
-    for label, count in (("15", 7), ("16", 3), ("17", 13)):
+    for label, count in (("15", 7), ("16", 3), ("17", 12)):
         check(f"{count} checks: {count} ok" in console.split(f"STEP {label}")[1], f"the checks of step {label} pass")
     check("7 checks:" in console.split("STEP 18")[1] and "0 failed" in console.split("STEP 18")[1].split("STEP NU")[0],
           "the final validation passes (warnings allowed)")
@@ -72,14 +72,33 @@ def test_steps_15_to_18() -> None:
     check("LICENCE BY LICENCE, the isolated renewals: mean ratio" in console and "std deviation between licences" in console
           and "histogram · the value of the isolated renewals by renewal ratio" in console,
           "the revaluation report reads the isolated renewals licence by licence: std deviation and ratio bands")
-    check("MARCAS TIMEVARYING: DIAGNÓSTICO" in console and "C · el tamaño del efecto" in console
-          and "FIN DEL DIAGNÓSTICO DE MARCAS" in console,
-          "step 17 prints the diagnostic of the timevarying marks: today against final, their cost, the size of the effect")
+    check("LO QUE RENUEVA CADA COMBINACIÓN DE MARCAS" in console and "REPARTO DE MARCAS" in console,
+          "step 17 prints what every combination of marks renews, and the distribution of the marks (today, final, adjustment)")
     check("between SERIES" in console and "histogram · every series in the distribution" in console
           and "█" in console and "month by month (24 closed" in console,
           "the revaluation report prints the claim, the histogram and the monthly path on screen (action 9)")
     check(results["uplift_verdict"]["via_usada_con_descuento"] == "estadistica",
           "in the synthetic the contract rule loses (observed 1.50 vs rule 1.67 at 40 %): the statistical path is used")
+    comparison = results["uplift_backtest"]
+    check({"estadistica", "contrato", "contrato_neutras"} <= set(comparison[comparison["filas"] == "descuento conocido"]["via"])
+          and {"conocido · neutras", "conocido · con marca", "conocido · sin subida"} <= set(comparison["filas"]),
+          "the exam of the uplift judges three paths on the known discount, split by marks and by increase "
+          "(this synthetic has no increase: only the rows without one)")
+    # the contract on the neutral rows: the rule where the discount is known and no negative mark is on, the
+    # statistical uplift on the marked rows and where the discount is unknown
+    from step_17_forecast import uplift_of_rows
+    from config import has_no_negative_mark
+    future = fine[fine["rol"] == "proyeccion"].copy()
+    neutral_path = uplift_of_rows(future.copy(), cells, {"via_usada_con_descuento": "contrato_neutras"}, configuration)
+    statistical_path = uplift_of_rows(future.copy(), cells, {"via_usada_con_descuento": "estadistica"}, configuration)
+    known = future[configuration.discount_value_column].notna()
+    neutral = has_no_negative_mark(future, configuration)
+    rule = 1 / (1 - future[configuration.discount_value_column].clip(upper=configuration.contract_discount_cap))
+    check((neutral_path.loc[known & neutral, "via_uplift"] == "contrato").all()
+          and np.allclose(neutral_path.loc[known & neutral, "uplift"], rule[known & neutral])
+          and (neutral_path.loc[~(known & neutral), "via_uplift"] == "estadistica").all()
+          and np.allclose(neutral_path.loc[~(known & neutral), "uplift"], statistical_path.loc[~(known & neutral), "uplift"]),
+          "contrato_neutras: the rule on the neutral rows with a known discount, the statistical uplift on every other row")
 
     forecast = results["forecast"]["forecast"]
     extended = forecast[forecast["origen_pipeline"].isin(["proyectada", "simulada"])]

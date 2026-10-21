@@ -12,7 +12,7 @@ import pandas as pd
 from step_06_series_routes import build_series_routes
 from step_08_rate_series import build_rate_series, wilson_half_width_pp
 from test_helpers import check, check_stops, console_of, count_status, finish
-from test_step_05 import units_synthetic
+from test_step_04 import units_synthetic
 
 
 def inputs_synthetic():
@@ -50,7 +50,7 @@ def test_rates_and_gaps() -> None:
     closed_real = rated[(rated["sintetica"] == 0) & rated["rol"].isin(["entrenamiento", "examen"])]
     check(np.allclose(closed_real["tasa"], closed_real["total_renewed_units"] / closed_real["total_tr_units"]),
           "rate = renewed / due in every real closed unit")
-    check(count_status(console, "ok") == 6 and "6 checks: 6 ok" in console, "the 6 checks pass and are logged")
+    check(count_status(console, "ok") == 4 and "4 checks: 4 ok" in console, "the 4 checks pass and are logged")
 
     top = summary.set_index("fs_id").loc["EU|A|0|0|0|0|web"]
     history = rated[(rated["fs_id"] == "EU|A|0|0|0|0|web") & rated["rol"].isin(["entrenamiento", "examen"])]
@@ -58,12 +58,9 @@ def test_rates_and_gaps() -> None:
           "own rate = Σ renewed / Σ due over the closed months (not an average of rates)")
     check(top["n_propio"] == history.loc[history["total_tr_units"] > 0, "total_tr_units"].median(),
           "n_propio = the median units due of a closed month")
-    check(summary.set_index("fs_id").loc["EU|A|0|0|0|0|kiosk", "meses_historia"] == 0,
-          "a series of the time_series universe has no own history here (it is treated apart)")
     check(set(summary["signo"]) == {"neutro", "negativo", "positivo", "mixto"},
           "the four signs appear (the synthetic has series with negative, positive and both kinds of flags)")
-    written = pd.read_sql("SELECT COUNT(*) AS n FROM sff_series_tasa", configuration.sql_engine)["n"].item()
-    check(written == len(series), "sff_series_tasa written, one row per series")
+    check(series["fs_id"].is_unique and len(series) == len(inputs_synthetic()[1]), "one summary row per series (in memory)")
 
 
 def test_a_rate_above_one_warns() -> None:

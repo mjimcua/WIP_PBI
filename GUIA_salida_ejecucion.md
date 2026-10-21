@@ -5,6 +5,12 @@ del 1-oct-2026 (extracto de 1.023.291 filas, mes en curso 2026-09). Las comproba
 amarillo (`WARN`: aviso, no detiene) o en rojo (`FAIL`: detiene el paso al contarlas). Se va completando a medida que se
 revisa la salida.
 
+> **Cambios desde esa ejecución (20-oct-2026).** Los pasos 05 (lookups) y 07 (cota de soporte) ya no existen. El paso 03
+> no deriva claves hash ni escribe `sff_fact_fine`, y el paso 02 no escribe `sff_calendario` (imprime su consulta). Los
+> pasos 01, 04, 06, 08, 10, 11, 13, 14, 17, 20, AUD e IN escriben menos tablas, así que tienen menos comprobaciones
+> "escrita y releída". La lista completa está en `DOC_modelo_datos.md`, en "Lo que NO se escribe". Las secciones de abajo
+> describen la ejecución del 1-oct tal como salió.
+
 ---
 
 ## Paso 00 · Validar el raw

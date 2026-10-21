@@ -1,7 +1,7 @@
 """
 step_21_new_rows.py — The rows the framework adds or wipes, month by month, in one format.
 
-The forecast does not use the extract as it comes. Four kinds of rows are added or wiped, each for a
+The forecast does not use the extract as it comes. Five kinds of rows are added or wiped, each for a
 reason, and this step puts them side by side so they can be explained:
 
   hueco                        step 08 · a forecast unit with nothing due, added inside the history of
